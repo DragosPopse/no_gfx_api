@@ -304,7 +304,7 @@ wait_idle: proc() : _wait_idle
 swapchain_create: proc(surface: vk.SurfaceKHR, init_size: [2]u32, frames_in_flight: u32, present_mode: Present_Mode = {}) : _swapchain_create
 swapchain_resize: proc(size: [2]u32) : _swapchain_resize  // NOTE: Do not call this every frame! Only if the dimensions change.
 // Blocks CPU until at least one frame is available.
-// NOTE: This can return a nil texture because of OS quirks!
+// NOTE: This can return a nil texture because of OS quirks! Resize or recreate the texture if that happens.
 swapchain_acquire_next: proc(loc := #caller_location) -> Texture : _swapchain_acquire_next
 swapchain_present: proc(queue: Queue, sem_wait: Semaphore, wait_value: u64, loc := #caller_location) : _swapchain_present
 features_available: proc() -> Features : _features_available

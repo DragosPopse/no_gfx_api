@@ -563,6 +563,8 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             features = {
                 shaderInt64 = true,
                 shaderInt16 = true,
+                shaderInt8  = true,
+                storageBuffer8BitAccess = true,
                 vertexPipelineStoresAndAtomics = true,
                 samplerAnisotropy = true,
                 imageCubeArray = true,
