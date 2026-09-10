@@ -533,6 +533,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             drawIndirectCount = b32(.Draw_Indirect_Multi in ctx.features),
             scalarBlockLayout = true,
             shaderInt8 = true,
+            storageBuffer8BitAccess = true,
         }
         next = &vk.PhysicalDeviceVulkan11Features {
             sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -563,8 +564,6 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             features = {
                 shaderInt64 = true,
                 shaderInt16 = true,
-                shaderInt8  = true,
-                storageBuffer8BitAccess = true,
                 vertexPipelineStoresAndAtomics = true,
                 samplerAnisotropy = true,
                 imageCubeArray = true,
