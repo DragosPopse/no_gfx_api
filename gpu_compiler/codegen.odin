@@ -166,10 +166,12 @@ codegen_ast_defs :: proc(ast: Ast, input_path: string, is_module_main: bool)
     for &type in ast.used_types
     {
         if type.kind == .Pointer {
-            writefln("layout(buffer_reference, scalar)%v buffer %v {{ %v _res_; }};", " readonly" if !type.is_mut else "", type_to_glsl(&type), type_to_glsl(type.base))
+            _, base_align := compute_type_size_and_align(type.base)
+            writefln("layout(buffer_reference, scalar, buffer_reference_align = %v)%v buffer %v {{ %v _res_; }};", base_align, " readonly" if !type.is_mut else "", type_to_glsl(&type), type_to_glsl(type.base))
         }
         if type.kind == .Slice {
-            writefln("layout(buffer_reference, scalar)%v buffer %v {{ %v _res_[]; }};", " readonly" if !type.is_mut else "", type_to_glsl(&type), type_to_glsl(type.base))
+            _, base_align := compute_type_size_and_align(type.base)
+            writefln("layout(buffer_reference, scalar, buffer_reference_align = %v)%v buffer %v {{ %v _res_[]; }};", base_align, " readonly" if !type.is_mut else "", type_to_glsl(&type), type_to_glsl(type.base))
         }
         if type.kind == .Array {
             writefln("struct %v {{ %v data[%v]; }};", type_to_glsl(&type), type_to_glsl(type.base), type.dimensions.x)
