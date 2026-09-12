@@ -114,7 +114,7 @@ Like most things in life, this is not without its tradeoffs:
 
 ## Shaders
 
-I think people should be able to use whichever shading language they want, but there are a few limitations due to the nature of this project. **no_gfx** uses pointers as the main way to pass data to shaders, so shading languages that don't support pointers at all are sadly disqualified – this includes HLSL. Other than that, any shading language can be used as long as a `.spirv` binary is produced with the following format (pseudocode, GLSL-like):
+I think people should be able to use whichever shading language they want, but there are a few limitations due to the nature of this project. **no_gfx** uses pointers as the main way to pass data to shaders, so shading languages that don't support pointers at all are sadly disqualified – this includes HLSL. Other than that, any shading language can be used as long as a `.spirv` binary is produced with the following ABI (pseudocode, GLSL-like):
 
 ```glsl
 layout(set = 0, binding = 0) uniform texture2D textures[];
