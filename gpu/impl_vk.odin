@@ -545,6 +545,7 @@ _init :: proc(validation := true, loc := #caller_location) -> bool
             pNext = next,
             dynamicRendering = true,
             synchronization2 = true,
+            maintenance4 = true,
         }
         next = &vk.PhysicalDeviceShaderObjectFeaturesEXT {
             sType = .PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
