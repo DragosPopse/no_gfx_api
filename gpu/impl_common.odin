@@ -304,6 +304,9 @@ texture_desc_cleanup :: #force_inline proc(desc: Texture_Desc) -> Texture_Desc
     res.mip_count = max(1, res.mip_count)
     res.layer_count = max(1, res.layer_count)
     res.sample_count = max(1, res.sample_count)
+    res.dimensions[0] = max(1, res.dimensions[0])
+    res.dimensions[1] = max(1, res.dimensions[1])
+    res.dimensions[2] = max(1, res.dimensions[2])
     return res
 }
 
