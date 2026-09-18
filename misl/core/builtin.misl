@@ -179,9 +179,16 @@ Color_Attachment_Desc :: struct {
 
 Ray_Flag :: enum u32 {
 	Opaque,
-	TODO_Something_Here,
+	No_Opaque,
 	Terminate_On_First_Hit,
 	Skip_Closest_Hit_Shader,
+	Cull_Back_Facing_Triangles,
+	Cull_Front_Facing_Triangles,
+	Cull_Opaque,
+	Cull_No_Opaque,
+	Skip_Triangles,
+	Skip_ABBs,
+	Force_Opacity_Micromap2_State,
 }
 
 Ray_Flags :: bit_set[Ray_Flag; u32]
