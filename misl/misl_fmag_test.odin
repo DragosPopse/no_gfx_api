@@ -1,3 +1,6 @@
+
+#+build ignore
+
 package misl
 
 import "core:math"

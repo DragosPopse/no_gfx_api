@@ -395,7 +395,7 @@ parse_options :: proc(args: []string) -> (opt: Options, ok: bool) {
 
 	if opt.no_gfx {
 		opt.no_bounds_check = true
-		opt.disable_asserts = true
+		// opt.disable_asserts = true
 	}
 
 	if len(opt.inputs) == 0 {

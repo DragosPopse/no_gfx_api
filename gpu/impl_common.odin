@@ -323,3 +323,38 @@ texture_view_desc_cleanup :: #force_inline proc(texture: Texture, desc: Texture_
     res.layer_count = max(1, res.layer_count)
     return res
 }
+
+// Assert API
+
+Assert_Kind :: enum u32
+{
+    None,
+    User,
+    Panic,
+    Slice_Index,
+}
+
+Assert_Record :: struct #align(16)
+{
+    fired: u32,
+    overflow: u32,
+    kind: u32,
+    line: u32,
+    column: u32,
+    path_len: u32,
+    msg_len: u32,
+    index: u32,
+    length: u32,
+    path: [256]u8,
+    message: [256]u8,
+}
+
+create_assert_buffer :: proc() -> ptr_t(Assert_Record)
+{
+    return mem_alloc(Assert_Record, mem_type = Memory.Readback)
+}
+
+destroy_assert_buffer :: proc(assert_buf: ptr_t(Assert_Record))
+{
+    mem_free(assert_buf)
+}

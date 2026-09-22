@@ -135,6 +135,35 @@ layout(push_constant) uniform Push
 {
     void* compute_data
 };
+layout(constant_id = 13370) const int workgroup_size_x;
+layout(constant_id = 13371) const int workgroup_size_y;
+layout(constant_id = 13372) const int workgroup_size_z;
+
+// Optional, for assert messages:
+enum Assert_Kind : uint
+{
+    None,
+    User,
+    Panic,
+    Slice_Index
+};
+struct Assert_Record
+{
+    uint fired;
+    uint overflow;
+    uint kind;
+    uint line;
+    uint column;
+    uint path_len;
+    uint msg_len;
+    uint index;
+    uint length;
+    u8 path[256];
+    u8 message[256];
+};
+// Is this spec constant is set != NULL, then the provided assert
+// buffer will be used.
+layout(constant_id = 13373) const Assert_Record* assert_buf_ptr = NULL;
 ```
 
 All examples provide [Slang](https://shader-slang.org/) variants of their shaders so you can get an idea of how to use an existing shading language with **no_gfx**.
