@@ -570,11 +570,11 @@ target_mode :: proc(t: Target) -> (mode: Misl_Mode, ok: bool) {
 }
 
 target_no_bounds :: proc(t: Target) -> bool {
-	return .No_Bounds_Check in t.flags || t.no_gfx_compatibility
+	return .No_Bounds_Check in t.flags // || t.no_gfx_compatibility
 }
 
 target_disable_asserts :: proc(t: Target) -> bool {
-	return .Disable_Asserts in t.flags || t.no_gfx_compatibility
+	return .Disable_Asserts in t.flags // || t.no_gfx_compatibility
 }
 
 compile_allocator :: proc(opts: Compile_Options) -> runtime.Allocator {
