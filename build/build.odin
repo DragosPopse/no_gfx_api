@@ -99,7 +99,7 @@ cmd_build_example_shaders_misl :: proc(example: Example) -> bool
     {
         dir, _ := os.split_path(shader)
         out_flag := fmt.tprintf("-out:%v", dir)
-        res &= run_task(with_exe_ext("./build/mislc"), shader, out_flag)
+        res &= run_task(with_exe_ext("./build/mislc"), shader, out_flag, "-target:spirv", "-target:asm")
     }
     return res
 }
