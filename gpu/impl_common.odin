@@ -8,6 +8,7 @@ import "core:sync"
 import "core:log"
 import "base:runtime"
 import intr "base:intrinsics"
+import "core:fmt"
 
 // Implementation of a thread-safe resource pool to be used for no_gfx_api handles
 Resource_Pool :: struct($Handle_T: typeid, $Info_T: typeid) where size_of(Handle_T) == 8
@@ -288,9 +289,10 @@ align_up :: proc(x, align: u64) -> (aligned: u64)
 
 // Misc
 
-fatal_error :: proc(fmt: string, args: ..any, location := #caller_location)
+fatal_error :: proc(fmt_: string, args: ..any, location := #caller_location)
 {
-    log.fatalf(fmt, ..args, location = location)
+    log.fatalf(fmt_, ..args, location = location)
+    fmt.printfln(fmt_, ..args)
     runtime.panic("")
 }
 

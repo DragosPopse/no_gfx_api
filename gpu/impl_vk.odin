@@ -1893,6 +1893,9 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
 {
     scratch, _ := acquire_scratch()
 
+    // All values in the union must be 4 bytes (including the implicit tag member, that will be 8).
+    #assert(size_of(spec_constants[0].value) == 8)
+
     push_constant_ranges: []vk.PushConstantRange
     if is_compute {
         push_constant_ranges = []vk.PushConstantRange {
@@ -1916,20 +1919,29 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     if is_compute do spec_constants_count += 3
     spec_map_entries := make([]vk.SpecializationMapEntry, spec_constants_count, allocator = scratch)
 
-    // This code assumes all values in the union are 4 bytes.
-    #assert(size_of(spec_constants[0].value) == 8)
-    spec_data := make([]u32, spec_constants_count + 1, allocator = scratch)
+    // The scratch allocator is linear. We are using this to construct the data
+    spec_data_start := new(u64, allocator = scratch)
+    spec_data_prev: rawptr
+
     spec_info: vk.SpecializationInfo
     spec_info_ptr: ^vk.SpecializationInfo = nil
     spec_count: u32 = 0
     spec_size: u32 = 0
 
+    offset_from_base :: proc(base: rawptr, addr: rawptr) -> u32
+    {
+        return u32(uintptr(addr) - uintptr(base))
+    }
+
     for spec_constant in spec_constants
     {
+        spec_data := new(u32, allocator = scratch)
+        spec_cur_size: u32 = 4
+
         spec_map_entries[spec_count] = vk.SpecializationMapEntry {
             constantID = spec_constant.id,
-            offset = u32(spec_count * size_of(u32)),
-            size = size_of(u32),
+            offset = offset_from_base(spec_data_start, spec_data),
+            size = int(spec_cur_size),
         }
         value_reinterpret := u32(0)
         switch val in spec_constant.value
@@ -1939,52 +1951,74 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
             case b32: value_reinterpret = transmute(u32) val
             case i32: value_reinterpret = cast(u32)      val
         }
-        spec_data[spec_count] = value_reinterpret
+        spec_data^ = value_reinterpret
+        spec_data_prev = spec_data
         spec_count += 1
-        spec_size += 4
+        spec_size += spec_cur_size
     }
 
     if is_compute
     {
-        spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-            constantID = Workgroup_Size_X_Spec_Const_ID,
-            offset = spec_size,
-            size = size_of(u32),
-        }
-        spec_data[spec_count] = group_size_x
-        spec_count += 1
-        spec_size += 4
+        {
+            spec_data := new(u32, allocator = scratch)
+            spec_cur_size: u32 = 4
 
-        spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-            constantID = Workgroup_Size_Y_Spec_Const_ID,
-            offset = spec_size,
-            size = size_of(u32),
+            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
+                constantID = Workgroup_Size_X_Spec_Const_ID,
+                offset = offset_from_base(spec_data_start, spec_data),
+                size = int(spec_cur_size),
+            }
+            spec_data^ = group_size_x
+            spec_data_prev = spec_data
+            spec_count += 1
+            spec_size += spec_cur_size
         }
-        spec_data[spec_count] = group_size_y
-        spec_count += 1
-        spec_size += 4
 
-        spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-            constantID = Workgroup_Size_Z_Spec_Const_ID,
-            offset = spec_size,
-            size = size_of(u32),
+        {
+            spec_data := new(u32, allocator = scratch)
+            spec_cur_size: u32 = 4
+
+            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
+                constantID = Workgroup_Size_Y_Spec_Const_ID,
+                offset = offset_from_base(spec_data_start, spec_data),
+                size = int(spec_cur_size),
+            }
+            spec_data^ = group_size_x
+            spec_data_prev = spec_data
+            spec_count += 1
+            spec_size += spec_cur_size
         }
-        spec_data[spec_count] = group_size_z
-        spec_count += 1
-        spec_size += 4
+
+        {
+            spec_data := new(u32, allocator = scratch)
+            spec_cur_size: u32 = 4
+
+            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
+                constantID = Workgroup_Size_Z_Spec_Const_ID,
+                offset = offset_from_base(spec_data_start, spec_data),
+                size = int(spec_cur_size),
+            }
+            spec_data^ = group_size_x
+            spec_data_prev = spec_data
+            spec_count += 1
+            spec_size += spec_cur_size
+        }
     }
 
     if ctx.gpu_validation
     {
+        spec_data := new(rawptr, allocator = scratch)
+        spec_cur_size: u32 = size_of(spec_data^)
+
         spec_map_entries[spec_count] = vk.SpecializationMapEntry {
             constantID = Assert_Buf_Spec_Const_ID,
-            offset = spec_size,
-            size = size_of(u64),
+            offset = offset_from_base(spec_data_start, spec_data),
+            size = int(spec_cur_size),
         }
-        spec_data[spec_count] = u32(uintptr(ctx.assert_buf.gpu.ptr) >> 32)
-        spec_data[spec_count+1] = u32(uintptr(ctx.assert_buf.gpu.ptr) & 0x00000000FFFFFFFF)
+        spec_data^ = ctx.assert_buf.gpu.ptr
+        spec_data_prev = spec_data
         spec_count += 1
-        spec_size += 8
+        spec_size += spec_cur_size
     }
 
     if spec_count > 0
@@ -1992,10 +2026,11 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
         spec_info = vk.SpecializationInfo {
             mapEntryCount = spec_count,
             pMapEntries = raw_data(spec_map_entries[:spec_count]),
-            dataSize = int(spec_size),
-            pData = raw_data(spec_data[:]),
+            dataSize = int(spec_size) + 8,
+            pData = spec_data_start,
         }
         spec_info_ptr = &spec_info
+        fmt.println(spec_size)
     }
 
     next_stage: vk.ShaderStageFlags
