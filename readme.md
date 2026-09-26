@@ -125,6 +125,7 @@ layout(set = 3, binding = 0) uniform accelerationStructureEXT bvhs[];  // Option
 // For vertex and fragment shaders:
 layout(push_constant) uniform Push
 {
+    Context* context;
     void* vert_data;
     void* frag_data;
     void* indirect_data;
@@ -133,6 +134,7 @@ layout(push_constant) uniform Push
 // For compute shaders:
 layout(push_constant) uniform Push
 {
+    Context* context;
     void* compute_data
 };
 layout(constant_id = 13370) const int workgroup_size_x;
@@ -161,9 +163,12 @@ struct Assert_Record
     u8 path[256];
     u8 message[256];
 };
-// Is this spec constant is set != NULL, then the provided assert
-// buffer will be used.
-layout(constant_id = 13373) const Assert_Record* assert_buf_ptr = NULL;
+layout(constant_id = 13373) const bool gpu_validation = false;
+
+struct Context
+{
+    Assert_Record assert_info;
+};
 ```
 
 All examples provide [Slang](https://shader-slang.org/) variants of their shaders so you can get an idea of how to use an existing shading language with **no_gfx**.

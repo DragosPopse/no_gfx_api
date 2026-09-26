@@ -350,13 +350,3 @@ Assert_Record :: struct #align(16)
     path: [256]u8,
     message: [256]u8,
 }
-
-create_assert_buffer :: proc() -> ptr_t(Assert_Record)
-{
-    return mem_alloc(Assert_Record, mem_type = Memory.Readback)
-}
-
-destroy_assert_buffer :: proc(assert_buf: ptr_t(Assert_Record))
-{
-    mem_free(assert_buf)
-}

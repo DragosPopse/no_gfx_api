@@ -7,11 +7,11 @@ import "base:runtime"
 import "core:sync"
 import "core:dynlib"
 import "core:container/priority_queue"
+import q "core:container/queue"
 import "core:strings"
 import "core:fmt"
 import intr "base:intrinsics"
 import "core:thread"
-import "core:time"
 
 import vk "vendor:vulkan"
 import "vma"
@@ -31,7 +31,7 @@ Workgroup_Size_Y_Spec_Const_ID :: 13371
 @(private="file")
 Workgroup_Size_Z_Spec_Const_ID :: 13372
 @(private="file")
-Assert_Buf_Spec_Const_ID :: 0
+Assert_Buf_Spec_Const_ID :: 13373
 
 @(private="file")
 Graphics_Shader_Push_Constants :: struct #packed {
@@ -91,9 +91,11 @@ Context :: struct
     tls_contexts: [dynamic]^Thread_Local_Context,
 
     // Assert
-    assert_buf: ptr_t(Assert_Record),
     assert_thread: ^thread.Thread,
     assert_thread_quit: bool,
+    readback_jobs: q.Queue(Readback_Assert_Job),
+    readback_queue_mutex: sync.Mutex,
+    readback_jobs_sem: sync.Sema,
 }
 
 @(private="file")
@@ -196,6 +198,8 @@ Command_Buffer_Info :: struct {
     queue: Queue,
     compute_shader: Shader,
     recording: bool,
+    context_buf: ptr_t(Assert_Record),
+    readback_done: sync.Sema,  // Whether or not the assert thread finished reading the assert buffer.
 
     wait_sems: [dynamic]Semaphore_Value,
     signal_sems: [dynamic]Semaphore_Value,
@@ -216,6 +220,15 @@ Semaphore_Value :: struct
 {
     sem: Semaphore,
     val: u64,
+}
+
+@(private="file")
+Readback_Assert_Job :: struct #all_or_none
+{
+    sem: Semaphore,
+    val: u64,
+    assert_buf: ptr_t(Assert_Record),  // Non-owned
+    readback_done: ^sync.Sema,
 }
 
 // Initialization
@@ -791,9 +804,7 @@ _init :: proc(validation := true, gpu_validation := true, loc := #caller_locatio
     }
 
     // Create assert resources
-    if ctx.gpu_validation
-    {
-        ctx.assert_buf = create_assert_buffer()
+    if ctx.gpu_validation {
         ctx.assert_thread = thread.create_and_start(assert_thread_proc)
     }
 
@@ -940,9 +951,9 @@ _cleanup :: proc(loc := #caller_location)
     // Destroy assert resources
     if ctx.gpu_validation
     {
-        intr.volatile_store(&ctx.assert_thread_quit, true)
+        ctx.assert_thread_quit = true
+        sync.sema_post(&ctx.readback_jobs_sem)
         thread.join(ctx.assert_thread)
-        destroy_assert_buffer(ctx.assert_buf)
         thread.destroy(ctx.assert_thread)
     }
 
@@ -952,6 +963,17 @@ _cleanup :: proc(loc := #caller_location)
             if tls_context != nil {
                 for type in Queue {
                     vk.DestroyCommandPool(ctx.device, tls_context.pools[type], nil)
+
+                    if ctx.gpu_validation {
+                        for true {
+                            queue_elem, ok := priority_queue.pop_safe(&tls_context.free_buffers[type])
+                            if !ok do break
+
+                            cmd_buf_info_ptr := pool_get_ptr(&ctx.command_buffers, queue_elem.handle)
+                            mem_free(cmd_buf_info_ptr.context_buf)
+                        }
+                    }
+
                     priority_queue.destroy(&tls_context.free_buffers[type])
                 }
 
@@ -1915,33 +1937,38 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
 
     // Setup specialization constants for compute shader workgroup size
     spec_constants_count := len(spec_constants)
-    spec_constants_count += 1  // Assert buffer
-    if is_compute do spec_constants_count += 3
+    spec_constants_count += 1  // gpu_validation bool
+    if is_compute do spec_constants_count += 3  // Workgroup sizes
     spec_map_entries := make([]vk.SpecializationMapEntry, spec_constants_count, allocator = scratch)
 
-    // The scratch allocator is linear. We are using this to construct the data
-    spec_data_start := new(u64, allocator = scratch)
-    spec_data_prev: rawptr
-
+    spec_data := make([]u32, spec_constants_count, allocator = scratch)
+    spec_count_cur := u32(0)
     spec_info: vk.SpecializationInfo
-    spec_info_ptr: ^vk.SpecializationInfo = nil
-    spec_count: u32 = 0
-    spec_size: u32 = 0
+    spec_info_ptr: ^vk.SpecializationInfo
 
-    offset_from_base :: proc(base: rawptr, addr: rawptr) -> u32
+    add_spec_const :: proc(spec_data: []u32, entries: []vk.SpecializationMapEntry, spec_count_cur: ^u32, id: u32, value: u32)
     {
-        return u32(uintptr(addr) - uintptr(base))
+        entries[spec_count_cur^] = vk.SpecializationMapEntry {
+            constantID = id,
+            offset = spec_count_cur^ * 4,
+            size = 4,
+        }
+        spec_data[spec_count_cur^] = value
+        spec_count_cur^ += 1
     }
 
+    // Add general spec constants
+    {
+        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Assert_Buf_Spec_Const_ID, 0)
+    }
+
+    // Add user-provided spec constants
     for spec_constant in spec_constants
     {
-        spec_data := new(u32, allocator = scratch)
-        spec_cur_size: u32 = 4
-
-        spec_map_entries[spec_count] = vk.SpecializationMapEntry {
+        spec_map_entries[spec_count_cur] = vk.SpecializationMapEntry {
             constantID = spec_constant.id,
-            offset = offset_from_base(spec_data_start, spec_data),
-            size = int(spec_cur_size),
+            offset = spec_count_cur * 4,
+            size = 4,
         }
         value_reinterpret := u32(0)
         switch val in spec_constant.value
@@ -1951,86 +1978,27 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
             case b32: value_reinterpret = transmute(u32) val
             case i32: value_reinterpret = cast(u32)      val
         }
-        spec_data^ = value_reinterpret
-        spec_data_prev = spec_data
-        spec_count += 1
-        spec_size += spec_cur_size
+        spec_data[spec_count_cur] = value_reinterpret
+        spec_count_cur += 1
     }
 
+    // Add compute shader related spec constants
     if is_compute
     {
-        {
-            spec_data := new(u32, allocator = scratch)
-            spec_cur_size: u32 = 4
-
-            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-                constantID = Workgroup_Size_X_Spec_Const_ID,
-                offset = offset_from_base(spec_data_start, spec_data),
-                size = int(spec_cur_size),
-            }
-            spec_data^ = group_size_x
-            spec_data_prev = spec_data
-            spec_count += 1
-            spec_size += spec_cur_size
-        }
-
-        {
-            spec_data := new(u32, allocator = scratch)
-            spec_cur_size: u32 = 4
-
-            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-                constantID = Workgroup_Size_Y_Spec_Const_ID,
-                offset = offset_from_base(spec_data_start, spec_data),
-                size = int(spec_cur_size),
-            }
-            spec_data^ = group_size_x
-            spec_data_prev = spec_data
-            spec_count += 1
-            spec_size += spec_cur_size
-        }
-
-        {
-            spec_data := new(u32, allocator = scratch)
-            spec_cur_size: u32 = 4
-
-            spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-                constantID = Workgroup_Size_Z_Spec_Const_ID,
-                offset = offset_from_base(spec_data_start, spec_data),
-                size = int(spec_cur_size),
-            }
-            spec_data^ = group_size_x
-            spec_data_prev = spec_data
-            spec_count += 1
-            spec_size += spec_cur_size
-        }
+        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Workgroup_Size_X_Spec_Const_ID, group_size_x)
+        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Workgroup_Size_Y_Spec_Const_ID, group_size_y)
+        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Workgroup_Size_Z_Spec_Const_ID, group_size_z)
     }
 
-    if ctx.gpu_validation
-    {
-        spec_data := new(rawptr, allocator = scratch)
-        spec_cur_size: u32 = size_of(spec_data^)
-
-        spec_map_entries[spec_count] = vk.SpecializationMapEntry {
-            constantID = Assert_Buf_Spec_Const_ID,
-            offset = offset_from_base(spec_data_start, spec_data),
-            size = int(spec_cur_size),
-        }
-        spec_data^ = ctx.assert_buf.gpu.ptr
-        spec_data_prev = spec_data
-        spec_count += 1
-        spec_size += spec_cur_size
-    }
-
-    if spec_count > 0
+    if spec_count_cur > 0
     {
         spec_info = vk.SpecializationInfo {
-            mapEntryCount = spec_count,
-            pMapEntries = raw_data(spec_map_entries[:spec_count]),
-            dataSize = int(spec_size) + 8,
-            pData = spec_data_start,
+            mapEntryCount = spec_count_cur,
+            pMapEntries = raw_data(spec_map_entries[:spec_count_cur]),
+            dataSize = int(spec_count_cur * 4),
+            pData = raw_data(spec_data),
         }
         spec_info_ptr = &spec_info
-        fmt.println(spec_size)
     }
 
     next_stage: vk.ShaderStageFlags
@@ -3561,6 +3529,12 @@ vk_acquire_cmd_buf :: proc(queue: Queue) -> Command_Buffer
         cur_sem_value := semaphore_get_value(ctx.cmd_bufs_sems[queue])
         if cur_sem_value >= cmd_buf_info_ptr.timeline_value
         {
+            // Wait until the assert readback thread is done reading
+            // before taking this command buffer.
+            if ctx.gpu_validation {
+                sync.sema_wait(&cmd_buf_info_ptr.readback_done)
+            }
+
             cmd_buf_info_ptr.recording = true
             cmd_buf_info_ptr.queue = queue
             cmd_buf_info_ptr.compute_shader = {}
@@ -3581,6 +3555,7 @@ vk_acquire_cmd_buf :: proc(queue: Queue) -> Command_Buffer
         queue = queue,
         compute_shader = {},
         thread_id = sync.current_thread_id(),
+        context_buf = mem_alloc(Assert_Record, mem_type = Memory.Readback)
     }
 
     // If no free command buffer is available, create a new one
@@ -3689,6 +3664,25 @@ vk_submit_cmd_bufs :: proc(cmd_bufs: []Command_Buffer)
     for cmd_buf in cmd_bufs
     {
         cmd_buf_info_ptr := pool_get_ptr(&ctx.command_buffers, cmd_buf)
+
+        if ctx.gpu_validation
+        {
+            queue := cmd_buf_info_ptr.queue
+            queue_sem := ctx.cmd_bufs_sems[queue]
+            sem_val := cmd_buf_info_ptr.timeline_value
+
+            job := Readback_Assert_Job {
+                sem = queue_sem,
+                val = sem_val,
+                assert_buf = cmd_buf_info_ptr.context_buf,
+                readback_done = &cmd_buf_info_ptr.readback_done,
+            }
+            if sync.guard(&ctx.readback_queue_mutex) {
+                q.push_back(&ctx.readback_jobs, job)
+            }
+            sync.sema_post(&ctx.readback_jobs_sem)
+        }
+
         cmd_buf_info_ptr.compute_shader = {}
         cmd_buf_info_ptr.recording = false
         clear(&cmd_buf_info_ptr.wait_sems)
@@ -4146,41 +4140,30 @@ supports_indirect_multi_draw :: proc(loc: runtime.Source_Code_Location) -> bool
 
 assert_thread_proc :: proc()
 {
-    sems: [Queue]Semaphore
-    snapshot: [Queue]u64
-    for queue in Queue {
-        sems[queue] = ctx.cmd_bufs_sems[queue]
-    }
-
-    for !intr.volatile_load(&ctx.assert_thread_quit)
+    for true
     {
-        if sync.guard(&ctx.queue_lock)
-        {
-            for queue in Queue {
-                snapshot[queue] = ctx.cmd_bufs_counters[queue]
-            }
+        sync.sema_wait(&ctx.readback_jobs_sem)
+        if ctx.assert_thread_quit do break
+
+        job: Readback_Assert_Job
+        if sync.guard(&ctx.readback_queue_mutex) {
+            job = q.pop_front(&ctx.readback_jobs)
+        }
+        semaphore_wait(job.sem, job.val)
+
+        if intr.volatile_load(&job.assert_buf.cpu.fired) != 0 {
+            print_assert_and_quit(job.assert_buf.cpu)
         }
 
-        for queue in Queue {
-            semaphore_wait(ctx.cmd_bufs_sems[queue], snapshot[queue])
-        }
-
-        // Read the assert buffer itself
-        if intr.volatile_load(&ctx.assert_buf.cpu.fired) != 0 {
-            print_assert_and_quit()
-        }
-
-        time.sleep(32)
+        sync.sema_post(job.readback_done)
     }
 }
 
 @(private="file")
-print_assert_and_quit :: proc()
+print_assert_and_quit :: proc(record: ^Assert_Record)
 {
-    assert(ctx.assert_buf != {})
-    assert(ctx.assert_buf.cpu.fired != 0)
+    assert(record.fired != 0)
 
-    record := ctx.assert_buf.cpu^
     kind := "unknown"
     switch Assert_Kind(record.kind)
     {
