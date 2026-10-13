@@ -536,13 +536,13 @@ create_gbuffer_textures :: proc(
 	gbuffer_metallic_roughness: gpu.Owned_Texture,
 	depth_texture: gpu.Owned_Texture,
 ) {
-	gbuffer_desc := gpu.Texture_Desc {
+	gbuffer_info := gpu.Texture_Info {
 		dimensions   = {u32(window_size_x), u32(window_size_y), 1},
 		format       = .RGBA8_Unorm,
 		usage        = {.Color_Attachment, .Sampled, .Storage},
 	}
 
-	depth_desc := gpu.Texture_Desc {
+	depth_info := gpu.Texture_Info {
 		dimensions   = {u32(window_size_x), u32(window_size_y), 1},
 		format       = .D32_Float,
 		usage        = {.Depth_Stencil_Attachment},
@@ -550,7 +550,7 @@ create_gbuffer_textures :: proc(
 
 	// Albedo
 	{
-		new_gbuffer_albedo := gpu.texture_alloc_and_create(gbuffer_desc)
+		new_gbuffer_albedo := gpu.texture_alloc_and_create(gbuffer_info)
 		GBUFFER_ALBEDO_IDX = gpu.desc_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_albedo, {})
@@ -560,7 +560,7 @@ create_gbuffer_textures :: proc(
 
 	// Normal
 	{
-		new_gbuffer_normal := gpu.texture_alloc_and_create(gbuffer_desc)
+		new_gbuffer_normal := gpu.texture_alloc_and_create(gbuffer_info)
 		GBUFFER_NORMAL_IDX = gpu.desc_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_normal, {})
@@ -570,7 +570,7 @@ create_gbuffer_textures :: proc(
 
 	// Metallic roughness
 	{
-		new_gbuffer_metallic_roughness := gpu.texture_alloc_and_create(gbuffer_desc)
+		new_gbuffer_metallic_roughness := gpu.texture_alloc_and_create(gbuffer_info)
 		GBUFFER_METALLIC_ROUGHNESS_IDX = gpu.desc_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_metallic_roughness, {})
@@ -580,7 +580,7 @@ create_gbuffer_textures :: proc(
 
 	// Depth
 	{
-		new_depth_texture := gpu.texture_alloc_and_create(depth_desc)
+		new_depth_texture := gpu.texture_alloc_and_create(depth_info)
 		depth_texture = new_depth_texture
 	}
 

@@ -120,7 +120,7 @@ Blit_Rect :: struct
     layer_count: u32,
 }
 
-Texture_Desc :: struct
+Texture_Info :: struct
 {
     type: Texture_Type,
     dimensions: [3]u32,
@@ -131,7 +131,7 @@ Texture_Desc :: struct
     usage: Usage_Flags,
 }
 
-Sampler_Desc :: struct
+Sampler_Info :: struct
 {
     min_filter: Filter,
     mag_filter: Filter,
@@ -146,7 +146,7 @@ Sampler_Desc :: struct
     compare_op: Compare_Op,  // Used for comparison/shadow sampling
 }
 
-Texture_View_Desc :: struct
+Texture_View_Info :: struct
 {
     type: Texture_Type,      // .Default = inherits the texture's type
     format: Texture_Format,  // .Default = inherits the texture's format
@@ -159,15 +159,15 @@ Texture_View_Desc :: struct
 Render_Attachment :: struct
 {
     texture: Texture,
-    view: Texture_View_Desc,
+    view: Texture_View_Info,
     load_op: Load_Op,
     store_op: Store_Op,
     clear_color: [4]f32,
     resolve_texture: Texture,
-    resolve_view: Texture_View_Desc,
+    resolve_view: Texture_View_Info,
 }
 
-Render_Pass_Desc :: struct
+Render_Pass_Info :: struct
 {
     render_area_offset: [2]i32,
     render_area_size:   [2]u32,  // 0 = full texture size
@@ -250,33 +250,33 @@ BVH_Instance :: struct
     blas_root: rawptr,
 }
 
-BVH_Mesh_Desc :: struct
+BVH_Mesh_Info :: struct
 {
     opacity: BVH_Opacity,
     vertex_stride: u32,
     max_vertex: u32,  // e.g. if reading vertices [200..300], this value must be 300.
     tri_count: u32,
 }
-BVH_AABB_Desc :: struct
+BVH_AABB_Info :: struct
 {
     opacity: BVH_Opacity,
     stride: u32,
     aabb_count: u32,
 }
-BVH_Shape_Desc :: union { BVH_Mesh_Desc, BVH_AABB_Desc }
+BVH_Shape_Info :: union { BVH_Mesh_Info, BVH_AABB_Info }
 
 BVH_Mesh  :: struct { verts: rawptr, indices: rawptr }
 BVH_AABBs :: struct { data: rawptr }
 BVH_Shape :: union { BVH_Mesh, BVH_AABBs }
 
-BLAS_Desc :: struct
+BLAS_Info :: struct
 {
     hint: BVH_Hint,
     caps: BVH_Capabilities,
-    shapes: []BVH_Shape_Desc,
+    shapes: []BVH_Shape_Info,
 }
 
-TLAS_Desc :: struct
+TLAS_Info :: struct
 {
     hint: BVH_Hint,
     caps: BVH_Capabilities,
@@ -319,8 +319,8 @@ mem_suballoc: proc(addr: ptr, offset, el_size, el_count: i64, loc := #caller_loc
 mem_free_raw: proc(addr: gpuptr, loc := #caller_location) : _mem_free_raw
 
 // Textures
-texture_size_and_align: proc(desc: Texture_Desc, loc := #caller_location) -> (size: u64, align: u64) : _texture_size_and_align
-texture_create: proc(desc: Texture_Desc, storage: gpuptr, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Texture : _texture_create
+texture_size_and_align: proc(desc: Texture_Info, loc := #caller_location) -> (size: u64, align: u64) : _texture_size_and_align
+texture_create: proc(desc: Texture_Info, storage: gpuptr, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Texture : _texture_create
 texture_destroy: proc(texture: Texture, loc := #caller_location) : _texture_destroy
 
 // Descriptors
@@ -330,9 +330,9 @@ desc_heap_set_textures: proc(heap: Descriptor_Heap, start_idx: u32, textures: []
 desc_heap_set_textures_rw: proc(heap: Descriptor_Heap, start_idx: u32, textures: []Texture_Descriptor, loc := #caller_location) : _desc_heap_set_textures_rw
 desc_heap_set_samplers : proc(heap: Descriptor_Heap, start_idx: u32, samplers: []Sampler_Descriptor, loc := #caller_location) : _desc_heap_set_samplers
 desc_heap_set_bvhs: proc(heap: Descriptor_Heap, start_idx: u32, bvhs: []BVH, loc := #caller_location) : _desc_heap_set_bvhs
-texture_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Desc, loc := #caller_location) -> Texture_Descriptor : _texture_descriptor
-texture_rw_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Desc, loc := #caller_location) -> Texture_Descriptor : _texture_rw_descriptor
-sampler_descriptor: proc(sampler_desc: Sampler_Desc, loc := #caller_location) -> Sampler_Descriptor : _sampler_descriptor
+texture_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor : _texture_descriptor
+texture_rw_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor : _texture_rw_descriptor
+sampler_descriptor: proc(sampler_desc: Sampler_Info, loc := #caller_location) -> Sampler_Descriptor : _sampler_descriptor
 
 // Shaders
 shader_create: proc(code: []u32, type: Shader_Type_Graphics, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create
@@ -350,12 +350,12 @@ queue_wait_idle: proc(queue: Queue) : _queue_wait_idle
 queue_submit: proc(queue: Queue, cmd_bufs: []Command_Buffer, loc := #caller_location) : _queue_submit
 
 // Raytracing
-blas_size_and_align: proc(desc: BLAS_Desc, loc := #caller_location) -> (size: u64, align: u64) : _blas_size_and_align
-blas_create: proc(desc: BLAS_Desc, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _blas_create
-blas_build_scratch_buffer_size_and_align: proc(desc: BLAS_Desc, loc := #caller_location) -> (size: u64, align: u64) : _blas_build_scratch_buffer_size_and_align
-tlas_size_and_align: proc(desc: TLAS_Desc, loc := #caller_location) -> (size: u64, align: u64) : _tlas_size_and_align
-tlas_create: proc(desc: TLAS_Desc, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _tlas_create
-tlas_build_scratch_buffer_size_and_align: proc(desc: TLAS_Desc, loc := #caller_location) -> (size: u64, align: u64) : _tlas_build_scratch_buffer_size_and_align
+blas_size_and_align: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _blas_size_and_align
+blas_create: proc(desc: BLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _blas_create
+blas_build_scratch_buffer_size_and_align: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _blas_build_scratch_buffer_size_and_align
+tlas_size_and_align: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _tlas_size_and_align
+tlas_create: proc(desc: TLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _tlas_create
+tlas_build_scratch_buffer_size_and_align: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _tlas_build_scratch_buffer_size_and_align
 bvh_size_and_align :: proc { blas_size_and_align, tlas_size_and_align }
 bvh_create :: proc { blas_create, tlas_create }
 bvh_build_scratch_buffer_size_and_align :: proc { blas_build_scratch_buffer_size_and_align, tlas_build_scratch_buffer_size_and_align }
@@ -391,7 +391,7 @@ cmd_dispatch: proc(cmd_buf: Command_Buffer, compute_data: gpuptr, num_groups_x: 
 // Schedule indirect compute shader based on number of groups, arguments is a pointer to a Dispatch_Indirect_Command struct
 cmd_dispatch_indirect_raw: proc(cmd_buf: Command_Buffer, compute_data, arguments: gpuptr, loc := #caller_location) : _cmd_dispatch_indirect_raw
 
-cmd_begin_render_pass: proc(cmd_buf: Command_Buffer, desc: Render_Pass_Desc, loc := #caller_location) : _cmd_begin_render_pass
+cmd_begin_render_pass: proc(cmd_buf: Command_Buffer, desc: Render_Pass_Info, loc := #caller_location) : _cmd_begin_render_pass
 cmd_end_render_pass: proc(cmd_buf: Command_Buffer, loc := #caller_location) : _cmd_end_render_pass
 
 // Draw procedures:

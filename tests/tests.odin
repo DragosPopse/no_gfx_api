@@ -818,12 +818,12 @@ test_compute :: proc(target: Render_Target)
     defer gpu.desc_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_info := gpu.Texture_Info {
         dimensions = { u32(Target_Size), u32(Target_Size), 1 },
         format = .RGBA8_Unorm,
         usage = { .Storage, .Sampled },
     }
-    output_texture := gpu.texture_alloc_and_create(output_desc)
+    output_texture := gpu.texture_alloc_and_create(output_info)
     defer gpu.texture_free_and_destroy(&output_texture)
 
     // Create texture descriptor for sampled access (fragment shader)
@@ -948,12 +948,12 @@ test_comparison_sampler :: proc(target: Render_Target)
     Sponza_Scene :: #load("assets/sponza.glb")
 
     // Shadow texture
-    shadow_depth_desc := gpu.Texture_Desc {
+    shadow_depth_info := gpu.Texture_Info {
         dimensions = { 1024*4, 1024*4, 1 },
         format = .D32_Float,
         usage = { .Depth_Stencil_Attachment, .Sampled },
     }
-    shadow_depth_texture := gpu.texture_alloc_and_create(shadow_depth_desc)
+    shadow_depth_texture := gpu.texture_alloc_and_create(shadow_depth_info)
     defer gpu.texture_free_and_destroy(&shadow_depth_texture)
 
     desc_pool := gpu.desc_pool_create()
@@ -1152,13 +1152,13 @@ test_sw_pathtracing :: proc(target: Render_Target)
     defer gpu.desc_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_info := gpu.Texture_Info {
         type = .D2,
         dimensions = { u32(Target_Size), u32(Target_Size), 1 },
         format = .RGBA16_Float,
         usage = { .Storage, .Sampled },
     }
-    output_texture := gpu.texture_alloc_and_create(output_desc)
+    output_texture := gpu.texture_alloc_and_create(output_info)
     defer gpu.texture_free_and_destroy(&output_texture)
 
     Compute_Data :: struct {
@@ -1331,30 +1331,30 @@ test_hw_pathtracing :: proc(target: Render_Target)
     {
         assert(idx_count % 3 == 0)
 
-        desc := gpu.BLAS_Desc {
+        info := gpu.BLAS_Info {
             hint = .Prefer_Fast_Trace,
             shapes = {
-                gpu.BVH_Mesh_Desc {
+                gpu.BVH_Mesh_Info {
                     vertex_stride = 16,
                     max_vertex = vert_count - 1,
                     tri_count = idx_count / 3,
                 }
             }
         }
-        bvh := gpu.bvh_alloc_and_create(desc)
-        scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+        bvh := gpu.bvh_alloc_and_create(info)
+        scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
         gpu.cmd_build_blas(cmd_buf, bvh, scratch, { gpu.BVH_Mesh { verts = positions.gpu.ptr, indices = indices.gpu.ptr } })
         return bvh
     }
 
     build_tlas :: proc(bvh_scratch_arena: ^gpu.Arena, cmd_buf: gpu.Command_Buffer, instances: gpu.gpuptr, instance_count: u32) -> gpu.Owned_BVH
     {
-        desc := gpu.TLAS_Desc {
+        info := gpu.TLAS_Info {
             hint = .Prefer_Fast_Trace,
             instance_count = instance_count
         }
-        bvh := gpu.bvh_alloc_and_create(desc)
-        scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+        bvh := gpu.bvh_alloc_and_create(info)
+        scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
         gpu.cmd_build_tlas(cmd_buf, bvh, scratch, instances)
         return bvh
     }
@@ -1489,13 +1489,13 @@ test_hw_pathtracing :: proc(target: Render_Target)
     defer gpu.desc_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_info := gpu.Texture_Info {
         type = .D2,
         dimensions = { u32(Target_Size), u32(Target_Size), 1 },
         format = .RGBA16_Float,
         usage = { .Storage, .Sampled },
     }
-    output_texture := gpu.texture_alloc_and_create(output_desc)
+    output_texture := gpu.texture_alloc_and_create(output_info)
     defer gpu.texture_free_and_destroy(&output_texture)
 
     Compute_Data :: struct {

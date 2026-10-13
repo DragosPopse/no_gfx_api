@@ -54,12 +54,12 @@ main :: proc()
 
     gpu.swapchain_create_from_sdl(window, Frames_In_Flight)
 
-    depth_desc := gpu.Texture_Desc {
+    depth_info := gpu.Texture_Info {
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .D32_Float,
         usage = { .Depth_Stencil_Attachment },
     }
-    depth_texture := gpu.texture_alloc_and_create(depth_desc)
+    depth_texture := gpu.texture_alloc_and_create(depth_info)
     defer gpu.texture_free_and_destroy(&depth_texture)
 
     vert_shader := gpu.shader_create(#load("shaders/shader.vert.spv", []u32), .Vertex)
@@ -120,10 +120,10 @@ main :: proc()
         {
             gpu.queue_wait_idle(.Main)
             gpu.swapchain_resize({ u32(window_size_x), u32(window_size_y) })
-            depth_desc.dimensions.x = u32(window_size_x)
-            depth_desc.dimensions.y = u32(window_size_y)
+            depth_info.dimensions.x = u32(window_size_x)
+            depth_info.dimensions.y = u32(window_size_y)
             gpu.texture_free_and_destroy(&depth_texture)
-            depth_texture = gpu.texture_alloc_and_create(depth_desc)
+            depth_texture = gpu.texture_alloc_and_create(depth_info)
         }
 
         swapchain := gpu.swapchain_acquire_next()  // Blocks CPU until at least one frame is available.

@@ -89,7 +89,7 @@ main :: proc()
     defer gpu.desc_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_desc := gpu.Texture_Info {
         type = .D2,
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .RGBA16_Float,
@@ -343,30 +343,30 @@ build_blas :: proc(bvh_scratch_arena: ^gpu.Arena, cmd_buf: gpu.Command_Buffer, p
 {
     assert(idx_count % 3 == 0)
 
-    desc := gpu.BLAS_Desc {
+    info := gpu.BLAS_Info {
         hint = .Prefer_Fast_Trace,
         shapes = {
-            gpu.BVH_Mesh_Desc {
+            gpu.BVH_Mesh_Info {
                 vertex_stride = 16,
                 max_vertex = vert_count - 1,
                 tri_count = idx_count / 3,
             }
         }
     }
-    bvh := gpu.bvh_alloc_and_create(desc)
-    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+    bvh := gpu.bvh_alloc_and_create(info)
+    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
     gpu.cmd_build_blas(cmd_buf, bvh, scratch, { gpu.BVH_Mesh { verts = positions.gpu.ptr, indices = indices.gpu.ptr } })
     return bvh
 }
 
 build_tlas :: proc(bvh_scratch_arena: ^gpu.Arena, cmd_buf: gpu.Command_Buffer, instances: gpu.gpuptr, instance_count: u32) -> gpu.Owned_BVH
 {
-    desc := gpu.TLAS_Desc {
+    info := gpu.TLAS_Info {
         hint = .Prefer_Fast_Trace,
         instance_count = instance_count
     }
-    bvh := gpu.bvh_alloc_and_create(desc)
-    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+    bvh := gpu.bvh_alloc_and_create(info)
+    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
     gpu.cmd_build_tlas(cmd_buf, bvh, scratch, instances)
     return bvh
 }

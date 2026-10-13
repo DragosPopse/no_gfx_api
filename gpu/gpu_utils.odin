@@ -282,7 +282,7 @@ Owned_Texture :: struct
     mem: gpuptr,
 }
 
-texture_alloc_and_create :: proc(desc: Texture_Desc, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Owned_Texture
+texture_alloc_and_create :: proc(desc: Texture_Info, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Owned_Texture
 {
     size, align := texture_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -303,7 +303,7 @@ Owned_BVH :: struct
     mem: gpuptr,
 }
 
-blas_alloc_and_create :: proc(desc: BLAS_Desc, loc := #caller_location) -> Owned_BVH
+blas_alloc_and_create :: proc(desc: BLAS_Info, loc := #caller_location) -> Owned_BVH
 {
     size, align := bvh_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -311,7 +311,7 @@ blas_alloc_and_create :: proc(desc: BLAS_Desc, loc := #caller_location) -> Owned
     return Owned_BVH { bvh, ptr }
 }
 
-tlas_alloc_and_create :: proc(desc: TLAS_Desc, loc := #caller_location) -> Owned_BVH
+tlas_alloc_and_create :: proc(desc: TLAS_Info, loc := #caller_location) -> Owned_BVH
 {
     size, align := bvh_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -328,13 +328,13 @@ bvh_free_and_destroy :: proc(bvh: ^Owned_BVH, loc := #caller_location)
     bvh^ = {}
 }
 
-blas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Desc, loc := #caller_location) -> ptr
+blas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Info, loc := #caller_location) -> ptr
 {
     size, align := blas_build_scratch_buffer_size_and_align(desc, loc = loc)
     return arena_alloc_raw(arena, size, 1, align)
 }
 
-tlas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Desc, loc := #caller_location) -> ptr
+tlas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Info, loc := #caller_location) -> ptr
 {
     size, align := tlas_build_scratch_buffer_size_and_align(desc, loc = loc)
     return arena_alloc_raw(arena, size, 1, align)
@@ -382,7 +382,7 @@ Scoped_Render_Pass_Out :: struct
 }
 
 @(deferred_out = cmd_scoped_render_pass_end)
-cmd_scoped_render_pass :: #force_inline proc(cmd_buf: Command_Buffer, desc: Render_Pass_Desc, loc := #caller_location) -> Scoped_Render_Pass_Out
+cmd_scoped_render_pass :: #force_inline proc(cmd_buf: Command_Buffer, desc: Render_Pass_Info, loc := #caller_location) -> Scoped_Render_Pass_Out
 {
     cmd_begin_render_pass(cmd_buf, desc, loc)
     return { cmd_buf, loc }

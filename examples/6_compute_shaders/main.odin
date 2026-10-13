@@ -66,7 +66,7 @@ main :: proc()
     defer gpu.desc_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_desc := gpu.Texture_Info {
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .RGBA8_Unorm,
         usage = { .Storage, .Sampled },
