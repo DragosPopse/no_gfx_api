@@ -342,6 +342,20 @@ tlas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Info, loc := #
 
 bvh_alloc_build_scratch_buffer :: proc { blas_alloc_build_scratch_buffer, tlas_alloc_build_scratch_buffer }
 
+blas_alloc_update_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Info, loc := #caller_location) -> ptr
+{
+    size, align := blas_update_scratch_buffer_size_and_align(desc, loc = loc)
+    return arena_alloc_raw(arena, size, 1, align)
+}
+
+tlas_alloc_update_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Info, loc := #caller_location) -> ptr
+{
+    size, align := tlas_update_scratch_buffer_size_and_align(desc, loc = loc)
+    return arena_alloc_raw(arena, size, 1, align)
+}
+
+bvh_alloc_update_scratch_buffer :: proc { blas_alloc_update_scratch_buffer, tlas_alloc_update_scratch_buffer }
+
 // Swapchain utils
 
 swapchain_create_from_sdl :: proc(window: ^sdl.Window, frames_in_flight: u32, present_mode: Present_Mode = {})

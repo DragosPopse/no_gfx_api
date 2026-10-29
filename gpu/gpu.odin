@@ -353,12 +353,15 @@ queue_submit: proc(queue: Queue, cmd_bufs: []Command_Buffer, loc := #caller_loca
 blas_size_and_align: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _blas_size_and_align
 blas_create: proc(desc: BLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _blas_create
 blas_build_scratch_buffer_size_and_align: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _blas_build_scratch_buffer_size_and_align
+blas_update_scratch_buffer_size_and_align: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _blas_update_scratch_buffer_size_and_align
 tlas_size_and_align: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _tlas_size_and_align
 tlas_create: proc(desc: TLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH : _tlas_create
 tlas_build_scratch_buffer_size_and_align: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _tlas_build_scratch_buffer_size_and_align
+tlas_update_scratch_buffer_size_and_align: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64) : _tlas_update_scratch_buffer_size_and_align
 bvh_size_and_align :: proc { blas_size_and_align, tlas_size_and_align }
 bvh_create :: proc { blas_create, tlas_create }
 bvh_build_scratch_buffer_size_and_align :: proc { blas_build_scratch_buffer_size_and_align, tlas_build_scratch_buffer_size_and_align }
+bvh_update_scratch_buffer_size_and_align :: proc { blas_update_scratch_buffer_size_and_align, tlas_update_scratch_buffer_size_and_align }
 bvh_root_ptr: proc(bvh: BVH, loc := #caller_location) -> rawptr : _bvh_root_ptr
 bvh_destroy: proc(bvh: BVH, loc := #caller_location) : _bvh_destroy
 

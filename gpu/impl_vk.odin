@@ -2128,12 +2128,16 @@ _blas_create :: proc(desc: BLAS_Info, storage: gpuptr, name := "", loc := #calle
 
 _blas_build_scratch_buffer_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
-    size_info := get_vk_blas_size_info(desc)
-    scratch_size := size_info.buildScratchSize
-    if .Update in desc.caps {
-        scratch_size = max(scratch_size, size_info.updateScratchSize)
+    return u64(get_vk_blas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+}
+
+_blas_update_scratch_buffer_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
+{
+    if ctx.validation && .Update not_in desc.caps {
+        log.errorf("BLAS_Info must include {{.Update}} to query update scratch size.", location = loc)
+        return 0, 1
     }
-    return u64(scratch_size), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+    return u64(get_vk_blas_size_info(desc).updateScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
 _tlas_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
@@ -2176,12 +2180,16 @@ _tlas_create :: proc(desc: TLAS_Info, storage: gpuptr, name := "", loc := #calle
 
 _tlas_build_scratch_buffer_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
-    size_info := get_vk_tlas_size_info(desc)
-    scratch_size := size_info.buildScratchSize
-    if .Update in desc.caps {
-        scratch_size = max(scratch_size, size_info.updateScratchSize)
+    return u64(get_vk_tlas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+}
+
+_tlas_update_scratch_buffer_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
+{
+    if ctx.validation && .Update not_in desc.caps {
+        log.errorf("TLAS_Info must include {{.Update}} to query update scratch size.", location = loc)
+        return 0, 1
     }
-    return u64(scratch_size), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+    return u64(get_vk_tlas_size_info(desc).updateScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
 _bvh_root_ptr :: proc(bvh: BVH, loc := #caller_location) -> rawptr
