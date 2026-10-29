@@ -4184,13 +4184,8 @@ print_assert_and_quit :: proc(record: ^Assert_Record)
     path_len := min(int(record.path_len), len(record.path))
     msg_len  := min(int(record.msg_len),  len(record.message))
     path := string(record.path[:path_len])
-    msg  := string(record.path[:msg_len])
+    msg  := string(record.message[:msg_len])
 
-    if record.overflow != 0 {
-        fatal_error("GPU Assert (%s) %s:%d:%d index=%v len=%v overflow=%v: %s",
-                    kind, path, record.line, record.column, record.index, record.length, record.overflow, msg)
-    }
-
-    fatal_error("GPU Assert (%s) %s:%d:%d index=%v len=%v: %s",
-                kind, path, record.line, record.column, record.index, record.length, msg)
+    fatal_error("GPU Assert (%s) %s:%d:%d index=%v len=%v hits=%v: %s",
+                kind, path, record.line, record.column, record.index, record.length, record.overflow+1, msg)
 }

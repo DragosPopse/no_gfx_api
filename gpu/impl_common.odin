@@ -338,15 +338,15 @@ Assert_Kind :: enum u32
 
 Assert_Record :: struct #align(16)
 {
-    fired: u32,
-    overflow: u32,
-    kind: u32,
-    line: u32,
-    column: u32,
+    fired:    u32,
+    overflow: u32,  // a.k.a., how many invocations also ran into an assert.
+    kind:     u32,
+    line:     u32,
+    column:   u32,
     path_len: u32,
-    msg_len: u32,
-    index: u32,
-    length: u32,
-    path: [256]u8,
-    message: [256]u8,
+    msg_len:  u32,
+    index:    i64,
+    length:   i64,
+    path:     [256]u8,
+    message:  [256]u8,
 }

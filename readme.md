@@ -158,8 +158,9 @@ struct Assert_Record
     uint column;
     uint path_len;
     uint msg_len;
-    uint index;
-    uint length;
+    uint _padding
+    int64 index;
+    int64 length;
     u8 path[256];
     u8 message[256];
 };
