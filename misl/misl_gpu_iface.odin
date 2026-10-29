@@ -88,6 +88,8 @@ GPU_Format :: enum {
 	rgba_i8_scaled,
 	rgba_i8_norm,
 
+	rgba_f16,
+
 	depth_f32,
 	stencil_u8,
 	depth_f32_stencil_u8,
@@ -183,6 +185,7 @@ gpu_format_names := []string{
 	"rgba_i8",
 	"rgba_i8_scaled",
 	"rgba_i8_norm",
+	"rgba_f16",
 	"depth_f32",
 	"stencil_u8",
 	"depth_f32_stencil_u8",

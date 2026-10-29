@@ -28,7 +28,6 @@ Host :: struct {
 	frame_arenas:    [FRAMES_IN_FLIGHT]gpu.Arena,
 	upload_arena:    gpu.Arena,
 	pipeline:        gpu.Pipeline,
-	rt_size:         [2]int,
 	bench_frame:     int,
 	bench_n:         int,
 	bench_t0:        time.Tick,
@@ -239,10 +238,11 @@ load_misl_pipeline :: proc(path, pipeline_name: string) -> gpu.Pipeline {
 	return gpu.create_graphics_pipeline(vs_r.spirv, fs_r.spirv, desc)
 }
 
-init :: proc(title: string, shader_rel := "", pipeline_name := "main_pipeline") {
+init :: proc(title: string, shader_rel := "", pipeline_name := "main_pipeline", window_flags: app.Window_Flags = {.Resizable, .Vulkan}) {
 	app.set_window_title(title)
-	app.set_window_flags({.Resizable, .Vulkan})
+	app.set_window_flags(window_flags)
 	app.set_window_size({1280, 720})
+	app.show_window()
 
 	features: gpu.Features = {
 		.Descriptor_Manager,
@@ -262,13 +262,10 @@ init :: proc(title: string, shader_rel := "", pipeline_name := "main_pipeline") 
 		},
 	})
 
-	winsize := app.window_size()
 	gpu.swapchain_config({
-		size = winsize,
 		format = .rgba_u8_srgb,
 		texture_count = FRAMES_IN_FLIGHT,
 	})
-	h.rt_size = winsize
 	h.next_frame = 1
 	h.frame_fence = gpu.create_fence(0)
 	for &arena in h.frame_arenas {
@@ -307,24 +304,16 @@ begin_frame :: proc() -> (cmdbuf: gpu.Command_Buffer, swapchain: gpu.Texture, ar
 	if s2h_mouse().z == 0 {
 		s2h_ui_release()
 	}
-	winsize = app.window_size()
-	if winsize.x <= 0 || winsize.y <= 0 {
+	acquired: bool
+	swapchain, winsize, acquired = gpu.swapchain_acquire()
+	if !acquired {
 		return
-	}
-	if winsize != h.rt_size {
-		gpu.swapchain_config({
-			size = winsize,
-			format = .rgba_u8_srgb,
-			texture_count = FRAMES_IN_FLIGHT,
-		})
-		h.rt_size = winsize
 	}
 	if h.next_frame > FRAMES_IN_FLIGHT {
 		gpu.wait_for_fence(h.frame_fence, h.next_frame - FRAMES_IN_FLIGHT)
 	}
 	arena = &h.frame_arenas[h.next_frame % FRAMES_IN_FLIGHT]
 	gpu.arena_free_all(arena)
-	swapchain = gpu.swapchain_acquire()
 	cmdbuf = gpu.record(.Direct)
 	gpu.cmd_set_viewport(cmdbuf, gpu.Viewport{
 		pos = {0, 0},
@@ -360,6 +349,13 @@ end_swapchain_pass :: proc(cmdbuf: gpu.Command_Buffer) {
 draw_fullscreen :: proc(cmdbuf: gpu.Command_Buffer, data: ^$T) {
 	gpu.cmd_set_graphics_pipeline(cmdbuf, h.pipeline)
 	gpu.cmd_draw(cmdbuf, data, data, 3, 1)
+}
+
+// wait_idle blocks until the last submitted frame's fence. Safe point to destroy textures that frame sampled.
+wait_idle :: proc() {
+	if h.next_frame > 1 {
+		gpu.wait_for_fence(h.frame_fence, h.next_frame - 1)
+	}
 }
 
 end_frame :: proc(cmdbuf: gpu.Command_Buffer) {

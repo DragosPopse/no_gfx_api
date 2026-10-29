@@ -91,7 +91,7 @@ Target :: struct {
 	opt:                   Optimization,
 	flags:                 Target_Flags,
 	no_gfx_compatibility:  bool,
-	assert_buffer_spec_id: u32,
+	disable_asserts_spec_id: u32,
 }
 
 Compile_Options :: struct {
@@ -570,11 +570,11 @@ target_mode :: proc(t: Target) -> (mode: Misl_Mode, ok: bool) {
 }
 
 target_no_bounds :: proc(t: Target) -> bool {
-	return .No_Bounds_Check in t.flags // || t.no_gfx_compatibility
+	return .No_Bounds_Check in t.flags || t.no_gfx_compatibility
 }
 
 target_disable_asserts :: proc(t: Target) -> bool {
-	return .Disable_Asserts in t.flags // || t.no_gfx_compatibility
+	return .Disable_Asserts in t.flags || t.no_gfx_compatibility
 }
 
 compile_allocator :: proc(opts: Compile_Options) -> runtime.Allocator {
@@ -665,7 +665,7 @@ compile_checked_gpu_entity :: proc(entry: ^Entity, target: Target, opts: Compile
 		embed_source = debug && .No_Source not_in target.flags,
 		names = debug,
 		named_entry = .Named_Entry in target.flags,
-		assert_buffer_spec_id = target.assert_buffer_spec_id,
+		disable_asserts_spec_id = target.disable_asserts_spec_id,
 	}
 
 	entry_start := time.tick_now()

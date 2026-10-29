@@ -49,7 +49,7 @@ clone_field :: proc(src: ^Field) -> ^Field {
 	n.default_value = clone_expr(src.default_value)
 	n.tag = src.tag
 	n.flags = src.flags
-	n.semantics = clone_ident(src.semantics)
+	n.semantics = clone_expr(src.semantics)
 	n.comment = src.comment
 	return n
 }

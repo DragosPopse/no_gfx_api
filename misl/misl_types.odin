@@ -145,6 +145,7 @@ Type_Struct :: struct {
 	size: int,
 	align: int,
 	fields: ^Type_Tuple,
+	io_locations: bool, // its fields' stage IO locations are assigned (assign_struct_io_locations)
 }
 
 Type_Proc :: struct {
@@ -155,6 +156,7 @@ Type_Proc :: struct {
 	stage: Maybe(Stage),
 	data_t: ^Type,
 	local_size: [3]u32, // compute workgroup size; default 1,1,1
+	local_size_spec: [3]^Entity, // non-nil axis is a u32 specialization constant
 	is_polymorphic: bool,
 	is_poly_specialized: bool,
 	poly_origin: ^Entity,

@@ -334,6 +334,25 @@ const_null :: proc(m: ^Module, ty: Id) -> Id {
 	return id
 }
 
+spec_const_true :: proc(m: ^Module) -> Id {
+	id := alloc_id(m)
+	emit_types(m, .SpecConstantTrue, Word(type_bool(m)), Word(id))
+	return id
+}
+
+spec_const_false :: proc(m: ^Module) -> Id {
+	id := alloc_id(m)
+	emit_types(m, .SpecConstantFalse, Word(type_bool(m)), Word(id))
+	return id
+}
+
+spec_const_f32 :: proc(m: ^Module, v: f32) -> Id {
+	bits := transmute(u32)v
+	id := alloc_id(m)
+	emit_types(m, .SpecConstant, Word(type_f32(m)), Word(id), bits)
+	return id
+}
+
 spec_const_int :: proc(m: ^Module, ty: Id, bits: u64, width: u32) -> Id {
 	id := alloc_id(m)
 	if width > 32 {

@@ -53,8 +53,16 @@ spv_stmt :: proc(cg: ^Spv_CG, stmt: ^Stmt) {
 			spv.branch(&cg.m, cg.cont_stk[len(cg.cont_stk)-1])
 		}
 	case ^Block_Stmt:
-		for s in v.stmts {
-			spv_stmt(cg, s)
+		i := 0
+		for i < len(v.stmts) {
+			n := spv_printf_run_len(v.stmts[i:])
+			if n > 0 {
+				spv_printf_run(cg, v.stmts[i:i + n])
+				i += n
+				continue
+			}
+			spv_stmt(cg, v.stmts[i])
+			i += 1
 		}
 	case ^Expr_Stmt:
 		if call, ok := v.expr.derived.(^Call_Expr); ok {
@@ -104,6 +112,62 @@ spv_stmt :: proc(cg: ^Spv_CG, stmt: ^Stmt) {
 	}
 }
 
+// Adjacent printf/printfln become one debugPrintf. RenderDoc keeps a single message
+// per fragment, so a later statement never shows unless it is in that same call.
+spv_printf_stmt :: proc(stmt: ^Stmt) -> (call: ^Call_Expr, nl, ok: bool) {
+	if stmt == nil do return
+	es, is_expr := stmt.derived.(^Expr_Stmt)
+	if !is_expr || es.expr == nil do return
+	call, ok = es.expr.derived.(^Call_Expr)
+	if !ok do return nil, false, false
+	callee := entity_from_expr(call.expr)
+	if callee == nil || callee.kind != .Builtin do return nil, false, false
+	#partial switch callee.builtin_id {
+	case .printf:
+		return call, false, true
+	case .printfln:
+		return call, true, true
+	}
+	return nil, false, false
+}
+
+spv_printf_run_len :: proc(stmts: []^Stmt) -> int {
+	n := 0
+	for s in stmts {
+		if _, _, ok := spv_printf_stmt(s); !ok do break
+		n += 1
+	}
+	return n
+}
+
+spv_printf_run :: proc(cg: ^Spv_CG, stmts: []^Stmt) {
+	p: Spv_Printf
+	spv_printf_init(&p, cg)
+	cur := 1
+	started := false
+	for s in stmts {
+		call, nl, ok := spv_printf_stmt(s)
+		if !ok do continue
+		next := spv_printf_call_variants(call)
+		if started && cur > 1 && cur * next > 32 {
+			spv_printf_commit_text(&p)
+			spv_printf_emit(&p)
+			spv_printf_init(&p, cg)
+			cur = 1
+		}
+		spv_debug_line(cg, s.pos)
+		spv_printf_append(&p, call, nl)
+		if cur > 4096 / max(next, 1) {
+			cur = 4096
+		} else {
+			cur *= next
+		}
+		started = true
+	}
+	spv_printf_commit_text(&p)
+	spv_printf_emit(&p)
+}
+
 spv_value_decl :: proc(cg: ^Spv_CG, v: ^Value_Decl) {
 	if len(v.values) == 1 && len(v.names) > 1 {
 		if call, ok := v.values[0].derived.(^Call_Expr); ok {
@@ -128,7 +192,7 @@ spv_value_decl :: proc(cg: ^Spv_CG, v: ^Value_Decl) {
 		}
 		if .Shared in var.flags do continue
 		ptr := spv_fn_var(cg, var.type, spv_debug_name(var) if var.name != "" else "_v", pos = var.pos)
-		cg.entity_ptr[var] = ptr
+		spv_bind_entity(cg, var, ptr)
 		has_init := i < len(v.values)
 		if type_is_ray_query(var.type) {
 			if has_init {
@@ -234,7 +298,7 @@ spv_if :: proc(cg: ^Spv_CG, v: ^If_Stmt) {
 	if v.init != nil {
 		spv_stmt(cg, v.init)
 	}
-	cond := spv_as_bool(cg, spv_rvalue(cg, v.cond), v.cond.tav.type)
+	cond := spv_cond_expr(cg, v.cond)
 	then_b := spv.block_new(&cg.m)
 	else_b := spv.block_new(&cg.m)
 	merge := spv.block_new(&cg.m)
@@ -293,7 +357,7 @@ spv_range :: proc(cg: ^Spv_CG, v: ^Range_Stmt) {
 		iter_ptr: spv.Id
 		if iter_e != nil {
 			iter_ptr = spv_fn_var(cg, iter_e.type, iter_e.name)
-			cg.entity_ptr[iter_e] = iter_ptr
+			spv_bind_entity(cg, iter_e, iter_ptr)
 		} else {
 			iter_ptr = spv_fn_var(cg, iter_t, "_i")
 		}
@@ -369,7 +433,7 @@ spv_range :: proc(cg: ^Spv_CG, v: ^Range_Stmt) {
 	idx_ptr: spv.Id
 	if idx_e != nil {
 		idx_ptr = spv_fn_var(cg, idx_e.type, idx_e.name)
-		cg.entity_ptr[idx_e] = idx_ptr
+		spv_bind_entity(cg, idx_e, idx_ptr)
 	} else {
 		idx_ptr = spv_fn_var(cg, t_i64, "_i")
 	}
@@ -377,7 +441,7 @@ spv_range :: proc(cg: ^Spv_CG, v: ^Range_Stmt) {
 	val_ptr: spv.Id
 	if val_e != nil && !is_ref {
 		val_ptr = spv_fn_var(cg, val_e.type, val_e.name)
-		cg.entity_ptr[val_e] = val_ptr
+		spv_bind_entity(cg, val_e, val_ptr)
 	}
 	slice_val: spv.Id
 	slice_rw := false
@@ -423,13 +487,15 @@ spv_range :: proc(cg: ^Spv_CG, v: ^Range_Stmt) {
 			data := spv.composite_extract(&cg.m, spv_psb_ptr(cg, st.elem, slice_rw).ptr_ty, slice_val, 0)
 			if is_ref {
 				chain := spv_psb_elem_ptr(cg, data, st.elem, idx_u)
-				cg.entity_ptr[val_e] = chain
-				cg.entity_sc[val_e] = .PhysicalStorageBuffer
-				cg.entity_val_ty[val_e] = spv_type(cg, st.elem, .Stored)
+				info := cg.entities[val_e]
+				info.ptr = chain
+				info.sc = .PhysicalStorageBuffer
+				info.val_ty = spv_type(cg, st.elem, .Stored)
+				info.alias = true
+				cg.entities[val_e] = info
 				if val_e.name != "" {
 					spv.name(&cg.m, chain, val_e.name)
 				}
-				cg.entity_alias[val_e] = true
 			} else {
 				spv.store(&cg.m, val_ptr, spv_psb_index(cg, data, st.elem, idx_u))
 			}
@@ -439,15 +505,17 @@ spv_range :: proc(cg: ^Spv_CG, v: ^Range_Stmt) {
 			pty := spv.type_pointer(&cg.m, base.sc, spv_type(cg, elem_t, layout))
 			ch := spv.access_chain(&cg.m, pty, base.ptr, {idx_u})
 			if is_ref {
-				cg.entity_ptr[val_e] = ch
-				cg.entity_sc[val_e] = base.sc
+				info := cg.entities[val_e]
+				info.ptr = ch
+				info.sc = base.sc
 				if base.aligned {
-					cg.entity_val_ty[val_e] = spv_type(cg, elem_t, .Stored)
+					info.val_ty = spv_type(cg, elem_t, .Stored)
 				}
+				info.alias = true
+				cg.entities[val_e] = info
 				if val_e.name != "" {
 					spv.name(&cg.m, ch, val_e.name)
 				}
-				cg.entity_alias[val_e] = true
 			} else {
 				loaded := spv.load(&cg.m, spv_type(cg, elem_t, layout), ch)
 				if base.aligned {
@@ -652,15 +720,17 @@ spv_return :: proc(cg: ^Spv_CG, v: ^Return_Stmt) {
 			spv.return_void(&cg.m)
 			return
 		}
-		result_entity := proc_t.results.variables[0]
-		result_expr := v.results[0]
-		if ident, ok := result_expr.derived.(^Ident); ok && ident.entity == result_entity {
-			spv_unpack_stage_result(cg, result_entity)
-		} else {
-			if ptr, pok := cg.entity_ptr[result_entity]; pok {
+		// `return a, b`: each value into its result (an output, or a struct's local), then a struct's fields into their outputs.
+		for result_expr, i in v.results {
+			if i >= len(proc_t.results.variables) do break
+			result_entity := proc_t.results.variables[i]
+			if ident, ok := result_expr.derived.(^Ident); ok && ident.entity == result_entity do continue
+			if ptr := cg.entities[result_entity].ptr; ptr != spv.NONE {
 				spv.store(&cg.m, ptr, spv_rvalue(cg, result_expr))
 			}
-			spv_unpack_stage_result(cg, result_entity)
+		}
+		for result in proc_t.results.variables {
+			spv_unpack_stage_result(cg, result)
 		}
 		spv.return_void(&cg.m)
 		return
@@ -698,10 +768,7 @@ spv_call_into_ents :: proc(cg: ^Spv_CG, dests: []^Entity, call: ^Call_Expr) {
 		types := make([]^Type, len(dests), context.temp_allocator)
 		for d, i in dests {
 			if d == nil do continue
-			if _, ok := cg.entity_ptr[d]; !ok {
-				cg.entity_ptr[d] = spv_fn_var(cg, d.type, d.name)
-			}
-			ptrs[i] = cg.entity_ptr[d]
+			ptrs[i] = spv_entity_local(cg, d)
 			types[i] = d.type
 		}
 		spv_fmag_exec_call(cg, call, ptrs, types)
@@ -718,10 +785,7 @@ spv_call_into_ents :: proc(cg: ^Spv_CG, dests: []^Entity, call: ^Call_Expr) {
 			return
 		}
 		if len(dests) > 0 && spv_live_dest(dests[0]) {
-			if _, ok := cg.entity_ptr[dests[0]]; !ok {
-				cg.entity_ptr[dests[0]] = spv_fn_var(cg, dests[0].type, dests[0].name)
-			}
-			spv.store(&cg.m, cg.entity_ptr[dests[0]], spv_rvalue(cg, call))
+			spv.store(&cg.m, spv_entity_local(cg, dests[0]), spv_rvalue(cg, call))
 		}
 		return
 	}
@@ -743,23 +807,18 @@ spv_call_into_ents :: proc(cg: ^Spv_CG, dests: []^Entity, call: ^Call_Expr) {
 		for i in 0 ..< len(results) - 1 {
 			d := dests[i] if i < len(dests) else nil
 			if spv_live_dest(d) {
-				if _, ok := cg.entity_ptr[d]; !ok {
-					cg.entity_ptr[d] = spv_fn_var(cg, d.type, d.name)
-				}
-				append(&args, cg.entity_ptr[d])
+				append(&args, spv_entity_local(cg, d))
 			} else {
 				append(&args, spv_fn_var(cg, results[i].type, "_out"))
 			}
 		}
 	}
 	last_i := len(results) - 1
-	ret := spv.call(&cg.m, spv_type(cg, results[last_i].type), cg.fn_id[fn_e], args[:])
+	fn_id, _ := spv_entity_fn(cg, fn_e)
+	ret := spv.call(&cg.m, spv_type(cg, results[last_i].type), fn_id, args[:])
 	spv_ref_copyback(cg, copies[:])
 	if last_i < len(dests) && spv_live_dest(dests[last_i]) {
-		if _, ok := cg.entity_ptr[dests[last_i]]; !ok {
-			cg.entity_ptr[dests[last_i]] = spv_fn_var(cg, dests[last_i].type, dests[last_i].name)
-		}
-		spv.store(&cg.m, cg.entity_ptr[dests[last_i]], ret)
+		spv.store(&cg.m, spv_entity_local(cg, dests[last_i]), ret)
 	}
 }
 
@@ -830,12 +889,9 @@ spv_emit_proc :: proc(cg: ^Spv_CG, e: ^Entity) {
 		ret_ty = spv_type_for_proc(cg, results[len(results)-1].type, e)
 	}
 	fn_ty := spv.type_function(&cg.m, ret_ty, param_tys[:])
-	fn_id, has := cg.fn_id[e]
-	if !has {
-		fn_id = spv.NONE
-	}
+	fn_id, _ := spv_entity_fn(cg, e)
 	id := spv.fn_begin(&cg.m, ret_ty, fn_ty, id = fn_id)
-	cg.fn_id[e] = id
+	spv_set_entity_fn(cg, e, id)
 	spv.name(&cg.m, id, spv_debug_name(e))
 
 	clear(&cg.out_ptrs)
@@ -845,10 +901,9 @@ spv_emit_proc :: proc(cg: ^Spv_CG, e: ^Entity) {
 		pid := spv.fn_param(&cg.m, val_ty)
 		spv.name(&cg.m, pid, pent.name)
 		if .Ref in pent.flags {
-			cg.entity_ptr[pent] = pid
+			spv_bind_entity(cg, pent, pid)
 		} else {
-			cg.entity_ptr[pent] = pid
-			cg.entity_val_ty[pent] = val_ty
+			spv_bind_entity(cg, pent, pid, .Function, val_ty)
 		}
 	}
 	if len(results) > 1 {
@@ -857,8 +912,7 @@ spv_emit_proc :: proc(cg: ^Spv_CG, e: ^Entity) {
 			pid := spv.fn_param(&cg.m, spv.type_pointer(&cg.m, .Function, val_ty))
 			append(&cg.out_ptrs, pid)
 			if results[i].name != "" {
-				cg.entity_ptr[results[i]] = pid
-				cg.entity_val_ty[results[i]] = val_ty
+				spv_bind_entity(cg, results[i], pid, .Function, val_ty)
 			}
 		}
 	}
@@ -877,19 +931,19 @@ spv_emit_proc :: proc(cg: ^Spv_CG, e: ^Entity) {
 	arg_n: u32 = 0
 	for pent in param_ents {
 		if .Ref in pent.flags do continue
-		src := cg.entity_ptr[pent]
-		val_ty := cg.entity_val_ty[pent]
+		info := cg.entities[pent]
+		src := info.ptr
+		val_ty := info.val_ty
 		loc := spv_fn_var_of(cg, val_ty, pent.name)
 		spv.store(&cg.m, loc, src)
-		cg.entity_ptr[pent] = loc
+		spv_bind_entity(cg, pent, loc)
 		arg_n += 1
 		spv_debug_declare(cg, loc, pent.type, pent.name, pent.pos, arg_n)
 	}
 	if len(results) == 1 && results[0].name != "" {
 		val_ty := spv_type_for_proc(cg, results[0].type, e)
 		cg.return_ptr = spv_fn_var_of(cg, val_ty, results[0].name)
-		cg.entity_ptr[results[0]] = cg.return_ptr
-		cg.entity_val_ty[results[0]] = val_ty
+		spv_bind_entity(cg, results[0], cg.return_ptr, .Function, val_ty)
 		_, _, is_handle := spv_device_handle_elem(results[0].type)
 		spv.store(&cg.m, cg.return_ptr, spv.const_null(&cg.m, val_ty) if is_handle else spv_zero(cg, results[0].type))
 		spv_debug_declare(cg, cg.return_ptr, results[0].type, results[0].name, results[0].pos)
@@ -898,8 +952,7 @@ spv_emit_proc :: proc(cg: ^Spv_CG, e: ^Entity) {
 		if last.name != "" {
 			val_ty := spv_type_for_proc(cg, last.type, e)
 			cg.return_ptr = spv_fn_var_of(cg, val_ty, last.name)
-			cg.entity_ptr[last] = cg.return_ptr
-			cg.entity_val_ty[last] = val_ty
+			spv_bind_entity(cg, last, cg.return_ptr, .Function, val_ty)
 			spv.store(&cg.m, cg.return_ptr, spv_zero(cg, last.type))
 			spv_debug_declare(cg, cg.return_ptr, last.type, last.name, last.pos)
 		}
@@ -951,9 +1004,20 @@ spv_emit_entry :: proc(cg: ^Spv_CG, e: ^Entity) {
 	cg.ep = spv.entry_point(&cg.m, model, fn, ep_name)
 	if cg.stage == .Fragment {
 		spv.execution_mode(&cg.m, fn, .OriginUpperLeft)
+		if pt.results != nil {
+			for result in pt.results.variables {
+				if result.semantic == .Depth {
+					spv.execution_mode(&cg.m, fn, .DepthReplacing)
+					break
+				}
+			}
+		}
 	}
 	if cg.stage == .Compute {
-		if cg.compat == .No_Gfx {
+		if compute_local_size_is_spec(pt) {
+			x, y, z := spv_local_size_ids(cg, pt)
+			spv.execution_mode_id(&cg.m, fn, .LocalSizeId, u32(x), u32(y), u32(z))
+		} else if cg.compat == .No_Gfx {
 			x := spv.spec_const_int(&cg.m, spv.type_u32(&cg.m), u64(pt.local_size[0]), 32)
 			y := spv.spec_const_int(&cg.m, spv.type_u32(&cg.m), u64(pt.local_size[1]), 32)
 			z := spv.spec_const_int(&cg.m, spv.type_u32(&cg.m), u64(pt.local_size[2]), 32)

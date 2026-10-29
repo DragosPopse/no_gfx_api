@@ -15,7 +15,7 @@ Spirv_Emit :: struct {
 	embed_source:          bool,
 	names:                 bool,
 	named_entry:           bool,
-	assert_buffer_spec_id: u32,
+	disable_asserts_spec_id: u32,
 }
 
 Spv_Layout :: enum {
@@ -53,6 +53,25 @@ Spv_Bindless :: struct {
 	bvh:      spv.Id,
 }
 
+// Zero id: that slot is not filled. A physical pointer is filled when psb_*.ptr_ty is set.
+Spv_Type_Info :: struct {
+	fn:     spv.Id,
+	stored: spv.Id,
+	psb_ro: Spv_Psb,
+	psb_rw: Spv_Psb,
+}
+
+// A procedure fills `fn`. A variable fills `ptr` and `sc`.
+// `val_ty` zero: load with spv_type of the entity. `alias`: range-ref AccessChain, not a legal Function call arg.
+// `sc` is read only when `ptr` is set. Storage_Class's zero value is UniformConstant, not Function.
+Spv_Entity_Info :: struct {
+	ptr:    spv.Id,
+	sc:     spv.Storage_Class,
+	val_ty: spv.Id,
+	alias:  bool,
+	fn:     spv.Id,
+}
+
 Spv_CG :: struct {
 	m:             spv.Module,
 	module:        ^Module,
@@ -71,27 +90,19 @@ Spv_CG :: struct {
 	debug_info:    bool,
 	embed_source:  bool,
 	named_entry:   bool,
-	assert_buffer_spec_id: u32,
+	disable_asserts_spec_id: u32,
 	subgroup_size: spv.Id,
 	subgroup_lane: spv.Id,
 
-	type_fn:       map[^Type]spv.Id,
-	type_stored:   map[^Type]spv.Id,
-	psb_ro:        map[^Type]Spv_Psb,
-	psb_rw:        map[^Type]Spv_Psb,
+	types:         map[^Type]Spv_Type_Info,
 	psb_ro_id:     map[spv.Id]Spv_Psb,
 	psb_rw_id:     map[spv.Id]Spv_Psb,
-	slice_fn:      map[^Type]spv.Id, // elem → {ptr, len} Function struct
-	slice_st:      map[^Type]spv.Id,
 	voidptr:       spv.Id,
-	entity_ptr:    map[^Entity]spv.Id,
-	entity_sc:     map[^Entity]spv.Storage_Class,
-	entity_val_ty: map[^Entity]spv.Id, // SPIR-V type loaded from entity_ptr
-	entity_alias:  map[^Entity]bool, // range-ref AccessChain — not a legal Function call arg
-	fn_id:         map[^Entity]spv.Id,
+	entities:      map[^Entity]Spv_Entity_Info,
 	bindless:      Spv_Bindless,
 	pc_var:        spv.Id,
 	pc_ty:         spv.Id,
+	spec_ids:      map[^Entity]spv.Id,
 	assert_spec:   spv.Id,
 	assert_ptr_ty: spv.Id,
 	assert_block:  spv.Id,
@@ -284,8 +295,21 @@ spv_expr_to_owner :: proc(cg: ^Spv_CG, expr: ^Expr, owner: ^Entity) -> spv.Id {
 	return spv_coerce_handle(cg, v, expr.tav.type, spv_expr_handle_rw(cg, expr), spv_elem_needs_rw(cg, elem, owner))
 }
 
+spv_module_needs_local_size_id :: proc(module: ^Module) -> bool {
+	if module == nil do return false
+	for e in module.definitions {
+		if e == nil || e.type == nil do continue
+		pt, ok := e.type.derived.(^Type_Proc)
+		if !ok do continue
+		for s in pt.local_size_spec {
+			if s != nil do return true
+		}
+	}
+	return false
+}
+
 spv_target_env :: proc(module: ^Module, needs_ray: bool) -> spirv_tools.Target_Env {
-	if needs_ray || (module != nil && module.compat == .No_Gfx) {
+	if needs_ray || (module != nil && module.compat == .No_Gfx) || spv_module_needs_local_size_id(module) {
 		return .Vulkan_1_3
 	}
 	return .Vulkan_1_2
@@ -390,20 +414,12 @@ codegen_spirv :: proc(module: ^Module, entry: ^Entity, code_allocator: runtime.A
 	cg.debug_info = emit.debug_info
 	cg.embed_source = emit.debug_info && emit.embed_source
 	cg.named_entry = emit.named_entry
-	cg.assert_buffer_spec_id = emit.assert_buffer_spec_id
-	cg.type_fn = make(map[^Type]spv.Id, context.temp_allocator)
-	cg.type_stored = make(map[^Type]spv.Id, context.temp_allocator)
-	cg.psb_ro = make(map[^Type]Spv_Psb, context.temp_allocator)
-	cg.psb_rw = make(map[^Type]Spv_Psb, context.temp_allocator)
+	cg.disable_asserts_spec_id = emit.disable_asserts_spec_id
+	cg.types = make(map[^Type]Spv_Type_Info, context.temp_allocator)
 	cg.psb_ro_id = make(map[spv.Id]Spv_Psb, context.temp_allocator)
 	cg.psb_rw_id = make(map[spv.Id]Spv_Psb, context.temp_allocator)
-	cg.slice_fn = make(map[^Type]spv.Id, context.temp_allocator)
-	cg.slice_st = make(map[^Type]spv.Id, context.temp_allocator)
-	cg.entity_ptr = make(map[^Entity]spv.Id, context.temp_allocator)
-	cg.entity_sc = make(map[^Entity]spv.Storage_Class, context.temp_allocator)
-	cg.entity_val_ty = make(map[^Entity]spv.Id, context.temp_allocator)
-	cg.entity_alias = make(map[^Entity]bool, context.temp_allocator)
-	cg.fn_id = make(map[^Entity]spv.Id, context.temp_allocator)
+	cg.entities = make(map[^Entity]Spv_Entity_Info, context.temp_allocator)
+	cg.spec_ids = make(map[^Entity]spv.Id, context.temp_allocator)
 	cg.file_str = make(map[string]spv.Id, context.temp_allocator)
 	cg.dbg_src = make(map[string]spv.Id, context.temp_allocator)
 	cg.dbg_types = make(map[^Type]spv.Id, context.temp_allocator)
@@ -442,10 +458,14 @@ codegen_spirv :: proc(module: ^Module, entry: ^Entity, code_allocator: runtime.A
 	if cg.needs_assert {
 		spv_emit_assert_types(&cg)
 	}
+	// Helpers can claim before the entry body. The push-constant block has to exist first.
+	if ept, eok := entry.type.derived.(^Type_Proc); eok {
+		spv_emit_push_constants(&cg, ept)
+	}
 
 	helpers := spv_collect_reachable_helpers(entry, stage)
 	for e in helpers {
-		cg.fn_id[e] = spv.alloc_id(&cg.m)
+		spv_set_entity_fn(&cg, e, spv.alloc_id(&cg.m))
 	}
 	if et != nil {
 		et.setup = time.tick_diff(setup_start, time.tick_now())
@@ -550,13 +570,28 @@ spv_type :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout = .Func) -> spv.Id
 		return spv.type_void(&cg.m)
 	}
 	type := default_type(type)
-	cache := &cg.type_fn if layout == .Func else &cg.type_stored
-	if id, ok := cache[type]; ok {
+	if id := spv_type_cached(cg, type, layout); id != spv.NONE {
 		return id
 	}
 	id := spv_type_uncached(cg, type, layout)
-	cache[type] = id
+	spv_type_cache(cg, type, layout, id)
 	return id
+}
+
+spv_type_cached :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout) -> spv.Id {
+	info := cg.types[type]
+	return info.fn if layout == .Func else info.stored
+}
+
+// Reloads the record. Emitting the body may have stored a forward physical pointer on this type.
+spv_type_cache :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout, id: spv.Id) {
+	info := cg.types[type]
+	if layout == .Func {
+		info.fn = id
+	} else {
+		info.stored = id
+	}
+	cg.types[type] = info
 }
 
 spv_type_uncached :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout) -> spv.Id {
@@ -717,9 +752,23 @@ spv_ensure_voidptr :: proc(cg: ^Spv_CG) {
 	spv.name(&cg.m, cg.voidptr, "_voidptr_")
 }
 
+spv_psb_cached :: proc(cg: ^Spv_CG, elem: ^Type, rw: bool) -> Spv_Psb {
+	info := cg.types[elem]
+	return info.psb_rw if rw else info.psb_ro
+}
+
+spv_psb_store :: proc(cg: ^Spv_CG, elem: ^Type, rw: bool, w: Spv_Psb) {
+	info := cg.types[elem]
+	if rw {
+		info.psb_rw = w
+	} else {
+		info.psb_ro = w
+	}
+	cg.types[elem] = info
+}
+
 spv_psb_ptr :: proc(cg: ^Spv_CG, elem: ^Type, rw: bool) -> Spv_Psb {
-	table := &cg.psb_rw if rw else &cg.psb_ro
-	if w, ok := table[elem]; ok {
+	if w := spv_psb_cached(cg, elem, rw); w.ptr_ty != spv.NONE {
 		return w
 	}
 	_, is_struct := elem.derived.(^Type_Struct)
@@ -727,16 +776,16 @@ spv_psb_ptr :: proc(cg: ^Spv_CG, elem: ^Type, rw: bool) -> Spv_Psb {
 	if !is_struct {
 		stored_id := spv_type(cg, elem, .Stored)
 		if w, ok := id_table[stored_id]; ok && w.complete {
-			table[elem] = w
+			spv_psb_store(cg, elem, rw, w)
 			return w
 		}
 	}
 	w: Spv_Psb
 	w.ptr_ty = spv.type_forward_pointer(&cg.m, .PhysicalStorageBuffer)
-	table[elem] = w
+	spv_psb_store(cg, elem, rw, w)
 	stored := spv_type(cg, elem, .Stored)
 	if shared, ok := id_table[stored]; ok && shared.complete {
-		table[elem] = shared
+		spv_psb_store(cg, elem, rw, shared)
 		return shared
 	}
 	ra := spv.type_runtime_array(&cg.m, stored, spv_size_of(elem))
@@ -751,7 +800,7 @@ spv_psb_ptr :: proc(cg: ^Spv_CG, elem: ^Type, rw: bool) -> Spv_Psb {
 	spv.type_pointer_define(&cg.m, w.ptr_ty, .PhysicalStorageBuffer, block)
 	w.block_ty = block
 	w.complete = true
-	table[elem] = w
+	spv_psb_store(cg, elem, rw, w)
 	id_table[stored] = w
 	return w
 }
@@ -768,11 +817,6 @@ spv_slice_type :: proc(cg: ^Spv_CG, elem: ^Type, layout: Spv_Layout, rw: bool) -
 	if layout == .Stored {
 		spv.member_decorate(&cg.m, id, 0, .Offset, 0)
 		spv.member_decorate(&cg.m, id, 1, .Offset, 8)
-	}
-	if layout == .Func {
-		cg.slice_fn[elem] = id
-	} else {
-		cg.slice_st[elem] = id
 	}
 	return id
 }
@@ -800,19 +844,51 @@ spv_fn_var_of :: proc(cg: ^Spv_CG, val_ty: spv.Id, name: string) -> spv.Id {
 	return id
 }
 
-spv_bind_entity :: proc(cg: ^Spv_CG, e: ^Entity, ptr: spv.Id, sc: spv.Storage_Class = .Function) {
+spv_bind_entity :: proc(cg: ^Spv_CG, e: ^Entity, ptr: spv.Id, sc: spv.Storage_Class = .Function, val_ty: spv.Id = spv.NONE) {
 	if e == nil do return
-	cg.entity_ptr[e] = ptr
-	cg.entity_sc[e] = sc
+	info := cg.entities[e]
+	info.ptr = ptr
+	info.sc = sc
+	if val_ty != spv.NONE {
+		info.val_ty = val_ty
+	}
+	cg.entities[e] = info
+}
+
+spv_set_entity_fn :: proc(cg: ^Spv_CG, e: ^Entity, id: spv.Id) {
+	if e == nil do return
+	info := cg.entities[e]
+	info.fn = id
+	cg.entities[e] = info
+}
+
+spv_entity_fn :: proc(cg: ^Spv_CG, e: ^Entity) -> (id: spv.Id, ok: bool) {
+	if e == nil do return
+	info := cg.entities[e]
+	id = info.fn
+	ok = id != spv.NONE
+	return
+}
+
+// The entity's function local, allocated on the first store into it.
+spv_entity_local :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
+	if e == nil do return spv.NONE
+	info := cg.entities[e]
+	if info.ptr != spv.NONE {
+		return info.ptr
+	}
+	ptr := spv_fn_var(cg, e.type, e.name)
+	spv_bind_entity(cg, e, ptr)
+	return ptr
 }
 
 spv_entity_sc :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Storage_Class {
-	if e != nil {
-		if sc, ok := cg.entity_sc[e]; ok {
-			return sc
-		}
+	if e == nil do return .Function
+	info := cg.entities[e]
+	if info.ptr == spv.NONE {
+		return .Function
 	}
-	return .Function
+	return info.sc
 }
 
 spv_change_layout :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type, from, to: Spv_Layout) -> spv.Id {

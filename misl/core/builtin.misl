@@ -72,6 +72,7 @@ Format :: enum u32 {
 	rgba_i8,
 	rgba_i8_scaled,
 	rgba_i8_norm,
+	rgba_f16,
 	depth_f32,
 	stencil_u8,
 	depth_f32_stencil_u8,
@@ -233,6 +234,21 @@ Ray_Result :: struct {
 @builtin rw8_cube_array :: #intrinsic("builtin.rw8_cube_array")
 @builtin rw16_cube_array :: #intrinsic("builtin.rw16_cube_array")
 @builtin rw32_cube_array :: #intrinsic("builtin.rw32_cube_array")
+
+// Semantics: they stand only after `|`. Declared in every mode: an FMAG check of a file also checks its GPU entries. Docs are `semantic_names` in misl_checker.odin. A user location is `#inout(T, N)`.
+@builtin SV_Position :: #intrinsic("sv.Position")
+@builtin SV_Target :: #intrinsic("sv.Target")
+@builtin SV_Depth :: #intrinsic("sv.Depth")
+@builtin SV_Vertex :: #intrinsic("sv.Vertex")
+@builtin SV_Instance :: #intrinsic("sv.Instance")
+@builtin SV_Data :: #intrinsic("sv.Data")
+@builtin SV_Indirect_Data :: #intrinsic("sv.Indirect_Data")
+@builtin SV_Global_Thread :: #intrinsic("sv.Global_Thread")
+@builtin SV_Group_Thread :: #intrinsic("sv.Group_Thread")
+@builtin SV_Group :: #intrinsic("sv.Group")
+@builtin SV_Group_Index :: #intrinsic("sv.Group_Index")
+@builtin SV_Num_Groups :: #intrinsic("sv.Num_Groups")
+@builtin SV_Group_Size :: #intrinsic("sv.Group_Size")
 
 #partial which MISL_MODE {
 case .SPIRV:

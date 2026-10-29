@@ -139,6 +139,8 @@ spv_sample :: proc(cg: ^Spv_CG, call: ^Call_Expr) -> spv.Id {
 	samp := spv_nu_load(cg, spv.type_sampler(&cg.m), samp_arr, sidx)
 	sampled_ty := spv.type_sampled_image(&cg.m, img_ty)
 	comb := spv.sampled_image(&cg.m, sampled_ty, img, samp)
+	// Image and sampler are NonUniform. SPIR-V requires the OpSampledImage result to be too.
+	spv.decorate(&cg.m, comb, .NonUniform)
 	coord := spv_rvalue(cg, call.args[2])
 	if is_cmp {
 		dim, arrayed := spv_view_dim(view)
@@ -238,7 +240,7 @@ spv_ensure_array_const :: proc(cg: ^Spv_CG, e: ^Entity) {
 	if e == nil {
 		return
 	}
-	if _, ok := cg.entity_ptr[e]; ok {
+	if cg.entities[e].ptr != spv.NONE {
 		return
 	}
 	init := spv_const_from_entity(cg, e)
@@ -286,24 +288,28 @@ spv_emit_push_constants :: proc(cg: ^Spv_CG, pt: ^Type_Proc) -> (used_data: ^Typ
 			used_indirect = param.type
 		}
 	}
-	if used_data == nil && used_indirect == nil {
+	if used_data == nil && used_indirect == nil && !cg.needs_assert {
 		return
 	}
+	spv_ensure_assert_block(cg)
 	is_compute := cg.stage == .Compute
 	members: [dynamic]spv.Id
 	members.allocator = context.temp_allocator
-	if is_compute {
-		append(&members, spv_pc_member_ty(cg, used_data))
-	} else {
-		data_index := 1 if cg.stage == .Fragment else 0
-		for index in 0 ..< 2 {
-			if used_data != nil && index == data_index {
-				append(&members, spv_pc_member_ty(cg, used_data))
-			} else {
-				append(&members, cg.voidptr)
+	append(&members, cg.assert_ptr_ty)
+	if used_data != nil || used_indirect != nil {
+		if is_compute {
+			append(&members, spv_pc_member_ty(cg, used_data))
+		} else {
+			data_index := 1 if cg.stage == .Fragment else 0
+			for index in 0 ..< 2 {
+				if used_data != nil && index == data_index {
+					append(&members, spv_pc_member_ty(cg, used_data))
+				} else {
+					append(&members, cg.voidptr)
+				}
 			}
+			append(&members, spv_pc_member_ty(cg, used_indirect))
 		}
-		append(&members, spv_pc_member_ty(cg, used_indirect))
 	}
 	cg.pc_ty = spv.type_struct(&cg.m, members[:], fmt.tprintf("pc:%p:%v", pt, cg.stage))
 	spv.decorate(&cg.m, cg.pc_ty, .Block)
@@ -313,15 +319,15 @@ spv_emit_push_constants :: proc(cg: ^Spv_CG, pt: ^Type_Proc) -> (used_data: ^Typ
 		spv.member_decorate(&cg.m, cg.pc_ty, u32(i), .Offset, off)
 		off += 8
 	}
+	spv.member_name(&cg.m, cg.pc_ty, 0, "_assert_")
 	if is_compute {
-		spv.member_name(&cg.m, cg.pc_ty, 0, "_data_")
-	} else {
-		spv.member_name(&cg.m, cg.pc_ty, 0, "_data_" if cg.stage == .Vertex && used_data != nil else "_0_")
-		spv.member_name(&cg.m, cg.pc_ty, 1, "_data_" if cg.stage == .Fragment && used_data != nil else "_1_")
-		if cg.stage == .Vertex && used_data != nil {
-			spv.member_name(&cg.m, cg.pc_ty, 0, "_data_")
+		if len(members) > 1 {
+			spv.member_name(&cg.m, cg.pc_ty, 1, "_data_")
 		}
-		spv.member_name(&cg.m, cg.pc_ty, 2, "_indirect_data_")
+	} else if len(members) > 1 {
+		spv.member_name(&cg.m, cg.pc_ty, 1, "_data_" if cg.stage == .Vertex && used_data != nil else "_0_")
+		spv.member_name(&cg.m, cg.pc_ty, 2, "_data_" if cg.stage == .Fragment && used_data != nil else "_1_")
+		spv.member_name(&cg.m, cg.pc_ty, 3, "_indirect_data_")
 	}
 	pty := spv.type_pointer(&cg.m, .PushConstant, cg.pc_ty)
 	cg.pc_var = spv.global_var(&cg.m, pty, .PushConstant)
@@ -364,9 +370,9 @@ spv_io_var :: proc(cg: ^Spv_CG, field: ^Entity, location: u32, sc: spv.Storage_C
 
 spv_emit_entry_io :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 	_ = e
-	used_data, used_indirect := spv_emit_push_constants(cg, pt)
-	_ = used_data
-	_ = used_indirect
+	if cg.pc_var == spv.NONE {
+		spv_emit_push_constants(cg, pt)
+	}
 	if pt.shared_vars != nil {
 		for var in pt.shared_vars {
 			pty := spv_ptr_ty(cg, .Workgroup, var.type)
@@ -377,48 +383,59 @@ spv_emit_entry_io :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 		}
 	}
 	semantic: [Semantic]^Entity
-	other: ^Entity
-	in_loc := 0
 	if cg.stage != .Compute {
 		for param in pt.params.variables {
-			if param.semantic != .None && param.semantic != .Custom {
-				semantic[param.semantic] = param
-			} else {
-				other = param
-				if st, ok := param.type.derived.(^Type_Struct); ok {
-					for field in st.fields.variables {
-						if field.semantic != .None && field.semantic != .Custom {
-							semantic[field.semantic] = field
-						} else {
-							id := spv_io_var(cg, field, u32(in_loc), .Input, "_in_")
-							spv_bind_entity(cg, field, id, .Input)
-							in_loc += 1
-						}
+			#partial switch param.semantic {
+			case .None:
+				st, is_struct := param.type.derived.(^Type_Struct)
+				if !is_struct do continue
+				for field in st.fields.variables {
+					if field.semantic != .None && field.semantic != .Inout {
+						semantic[field.semantic] = field
+					} else {
+						id := spv_io_var(cg, field, u32(field.location), .Input, "_in_")
+						spv_bind_entity(cg, field, id, .Input)
 					}
 				}
+			case .Inout:
+				id := spv_io_var(cg, param, u32(param.location), .Input, "_in_")
+				spv_bind_entity(cg, param, id, .Input)
+			case:
+				semantic[param.semantic] = param
 			}
 		}
 	} else {
 		for param in pt.params.variables {
-			if param.semantic != .None && param.semantic != .Custom {
+			if param.semantic != .None && param.semantic != .Inout {
 				semantic[param.semantic] = param
 			}
 		}
 	}
-	out_loc := 0
+	// Targets are numbered in declaration order; varyings take the location the checker gave them.
+	target_loc := 0
 	if cg.stage != .Compute && pt.results != nil {
 		for result in pt.results.variables {
-			if result.semantic != .None && result.semantic != .Custom {
+			if result.semantic == .Inout {
+				id := spv_io_var(cg, result, u32(result.location), .Output, "_out_")
+				spv_bind_entity(cg, result, id, .Output)
+				append(&cg.stage_outs, id)
+				append(&cg.stage_out_ents, result)
+			} else if result.semantic != .None {
 				semantic[result.semantic] = result
 				if result.semantic == .Target {
-					id := spv_io_var(cg, result, u32(out_loc), .Output, "_out_")
+					id := spv_io_var(cg, result, u32(target_loc), .Output, "_out_")
 					spv_bind_entity(cg, result, id, .Output)
 					append(&cg.stage_outs, id)
 					append(&cg.stage_out_ents, result)
-					out_loc += 1
+					target_loc += 1
 				} else if result.semantic == .Position && cg.stage == .Vertex {
 					v4 := spv.type_vector(&cg.m, spv.type_f32(&cg.m), 4)
 					id := spv_builtin_var(cg, .Position, v4, "gl_Position", .Output)
+					spv_bind_entity(cg, result, id, .Output)
+					append(&cg.stage_outs, id)
+					append(&cg.stage_out_ents, result)
+				} else if result.semantic == .Depth && cg.stage == .Fragment {
+					id := spv_builtin_var(cg, .FragDepth, spv.type_f32(&cg.m), "gl_FragDepth", .Output)
 					spv_bind_entity(cg, result, id, .Output)
 					append(&cg.stage_outs, id)
 					append(&cg.stage_out_ents, result)
@@ -434,20 +451,19 @@ spv_emit_entry_io :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 							append(&cg.stage_outs, id)
 							append(&cg.stage_out_ents, field)
 						}
-					} else if field.semantic == .Target {
-						id := spv_io_var(cg, field, u32(out_loc), .Output, "_out_")
+					} else if field.semantic == .Target || (cg.stage == .Fragment && field.semantic == .None) {
+						id := spv_io_var(cg, field, u32(target_loc), .Output, "_out_")
 						spv_bind_entity(cg, field, id, .Output)
 						append(&cg.stage_outs, id)
 						append(&cg.stage_out_ents, field)
-						out_loc += 1
-					} else if field.semantic != .None && field.semantic != .Custom {
+						target_loc += 1
+					} else if field.semantic != .None && field.semantic != .Inout {
 						semantic[field.semantic] = field
 					} else {
-						id := spv_io_var(cg, field, u32(out_loc), .Output, "_out_")
+						id := spv_io_var(cg, field, u32(field.location), .Output, "_out_")
 						spv_bind_entity(cg, field, id, .Output)
 						append(&cg.stage_outs, id)
 						append(&cg.stage_out_ents, field)
-						out_loc += 1
 					}
 				}
 			}
@@ -488,8 +504,6 @@ spv_emit_entry_io :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 		spv_bind_entity(cg, g, id, .Input)
 	}
 	cg.curr_entity = e
-	_ = other
-	_ = semantic
 }
 
 spv_pc_load_member :: proc(cg: ^Spv_CG, member: u32, ty: spv.Id) -> spv.Id {
@@ -501,48 +515,54 @@ spv_pc_load_member :: proc(cg: ^Spv_CG, member: u32, ty: spv.Id) -> spv.Id {
 
 spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 	semantic: [Semantic]^Entity
-	other: ^Entity
 	for param in pt.params.variables {
-		if param.semantic != .None && param.semantic != .Custom {
+		if param.semantic != .None && param.semantic != .Inout {
 			semantic[param.semantic] = param
-		} else if cg.stage != .Compute {
-			other = param
+			continue
 		}
-	}
-	if other != nil {
-		loc := spv_fn_var(cg, other.type, other.name, pos = other.pos)
-		spv_bind_entity(cg, other, loc, .Function)
-		if st, ok := other.type.derived.(^Type_Struct); ok {
-			parts := make([]spv.Id, len(st.fields.variables), context.temp_allocator)
-			for field, i in st.fields.variables {
-				if field.semantic == .Position && cg.stage == .Fragment {
-					src := cg.entity_ptr[field]
-					parts[i] = spv.load(&cg.m, spv_type(cg, field.type), src)
-				} else if src, sok := cg.entity_ptr[field]; sok {
-					parts[i] = spv.load(&cg.m, spv_type(cg, field.type), src)
-				} else {
-					parts[i] = spv_zero(cg, field.type)
-				}
+		if cg.stage == .Compute do continue
+		// A struct input is built from its fields' inputs; a bound input is copied from its own.
+		st, is_struct := param.type.derived.(^Type_Struct)
+		if param.semantic == .None && !is_struct do continue
+		src := cg.entities[param].ptr
+		loc := spv_fn_var(cg, param.type, param.name, pos = param.pos)
+		spv_bind_entity(cg, param, loc, .Function)
+		if !is_struct {
+			spv.store(&cg.m, loc, spv.load(&cg.m, spv_type(cg, param.type), src))
+			continue
+		}
+		parts := make([]spv.Id, len(st.fields.variables), context.temp_allocator)
+		for field, i in st.fields.variables {
+			if src := cg.entities[field].ptr; src != spv.NONE {
+				parts[i] = spv.load(&cg.m, spv_type(cg, field.type), src)
+			} else {
+				parts[i] = spv_zero(cg, field.type)
 			}
-			spv.store(&cg.m, loc, spv.composite_construct(&cg.m, spv_type(cg, other.type), parts))
 		}
+		spv.store(&cg.m, loc, spv.composite_construct(&cg.m, spv_type(cg, param.type), parts))
+	}
+	if v := semantic[.Position]; v != nil && cg.stage == .Fragment && .Param in v.flags {
+		src := cg.entities[v].ptr
+		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
+		spv.store(&cg.m, loc, spv.load(&cg.m, spv_type(cg, v.type), src))
+		spv_bind_entity(cg, v, loc, .Function)
 	}
 	if v := semantic[.Vertex_ID]; v != nil {
-		src := cg.entity_ptr[v]
+		src := cg.entities[v].ptr
 		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
 		spv.store(&cg.m, loc, spv.load(&cg.m, spv_type(cg, v.type), src))
 		spv_bind_entity(cg, v, loc, .Function)
 	}
 	if v := semantic[.Instance_ID]; v != nil {
-		src := cg.entity_ptr[v]
+		src := cg.entities[v].ptr
 		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
 		spv.store(&cg.m, loc, spv.load(&cg.m, spv_type(cg, v.type), src))
 		spv_bind_entity(cg, v, loc, .Function)
 	}
 	if v := semantic[.Data]; v != nil {
-		member: u32 = 0
+		member: u32 = 1
 		if cg.stage == .Fragment {
-			member = 1
+			member = 2
 		}
 		val := spv_pc_load_member(cg, member, spv_type(cg, v.type, .Stored))
 		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
@@ -555,7 +575,7 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 			pointee = v.type
 		}
 		wrap := spv_type(cg, v.type, .Stored)
-		ptr_val := spv_pc_load_member(cg, 2 if cg.stage != .Compute else 0, wrap)
+		ptr_val := spv_pc_load_member(cg, 3 if cg.stage != .Compute else 1, wrap)
 		idx := spv.const_u32(&cg.m, 0)
 		if cg.stage == .Vertex {
 			draw := spv_builtin_var(cg, .DrawIndex, spv.type_u32(&cg.m), "gl_DrawID")
@@ -570,16 +590,21 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 	for sem in compute_sems {
 		v := semantic[sem]
 		if v == nil do continue
-		src := cg.entity_ptr[v]
+		src := cg.entities[v].ptr
 		val := spv.load(&cg.m, spv_type(cg, v.type), src)
 		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
 		spv.store(&cg.m, loc, val)
 		spv_bind_entity(cg, v, loc, .Function)
 	}
 	if v := semantic[.Group_Size]; v != nil {
-		x := spv.const_u32(&cg.m, u32(pt.local_size[0]))
-		y := spv.const_u32(&cg.m, u32(pt.local_size[1]))
-		z := spv.const_u32(&cg.m, u32(pt.local_size[2]))
+		x, y, z: spv.Id
+		if compute_local_size_is_spec(pt) {
+			x, y, z = spv_local_size_ids(cg, pt)
+		} else {
+			x = spv.const_u32(&cg.m, u32(pt.local_size[0]))
+			y = spv.const_u32(&cg.m, u32(pt.local_size[1]))
+			z = spv.const_u32(&cg.m, u32(pt.local_size[2]))
+		}
 		uvec3 := spv.type_vector(&cg.m, spv.type_u32(&cg.m), 3)
 		val := spv.composite_construct(&cg.m, uvec3, {x, y, z})
 		loc := spv_fn_var(cg, v.type, v.name)
@@ -588,7 +613,7 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 	}
 	if pt.results != nil && cg.stage != .Compute {
 		for result in pt.results.variables {
-			if result.semantic == .Target || result.semantic == .Position {
+			if result.semantic != .None {
 				continue
 			}
 			loc := spv_fn_var(cg, result.type, result.name if result.name != "" else "_ret")
@@ -603,24 +628,18 @@ spv_unpack_stage_result :: proc(cg: ^Spv_CG, result: ^Entity) {
 	if result == nil {
 		return
 	}
-	if result.semantic == .Target || result.semantic == .Position {
-		if dst, ok := cg.entity_ptr[result]; ok {
-			if src, sok := cg.entity_ptr[result]; sok {
-				_ = dst
-				_ = src
-			}
-		}
+	if result.semantic != .None {
 		return
 	}
-	src_ptr, ok := cg.entity_ptr[result]
-	if !ok {
+	src_ptr := cg.entities[result].ptr
+	if src_ptr == spv.NONE {
 		return
 	}
 	if st, is_st := result.type.derived.(^Type_Struct); is_st {
 		agg := spv.load(&cg.m, spv_type(cg, result.type), src_ptr)
 		for field, i in st.fields.variables {
-			dst, dok := cg.entity_ptr[field]
-			if !dok do continue
+			dst := cg.entities[field].ptr
+			if dst == spv.NONE do continue
 			part := spv.composite_extract(&cg.m, spv_type(cg, field.type), agg, u32(i))
 			spv.store(&cg.m, dst, part)
 		}
@@ -628,7 +647,10 @@ spv_unpack_stage_result :: proc(cg: ^Spv_CG, result: ^Entity) {
 	}
 }
 
-spv_emit_assert_types :: proc(cg: ^Spv_CG) {
+spv_ensure_assert_block :: proc(cg: ^Spv_CG) {
+	if cg.assert_ptr_ty != spv.NONE {
+		return
+	}
 	u32_t := spv.type_u32(&cg.m)
 	i64_t := spv.type_i64(&cg.m)
 	u8_t := spv.type_u8(&cg.m)
@@ -646,13 +668,17 @@ spv_emit_assert_types :: proc(cg: ^Spv_CG) {
 	}
 	cg.assert_block = block
 	cg.assert_ptr_ty = spv.type_pointer(&cg.m, .PhysicalStorageBuffer, block)
-	cg.assert_spec = spv.spec_const_int(&cg.m, spv.type_u64(&cg.m), 0, 64)
-	spv.decorate(&cg.m, cg.assert_spec, .SpecId, cg.assert_buffer_spec_id)
-	spv.name(&cg.m, cg.assert_spec, "_misl_assert_addr")
+}
+
+spv_emit_assert_types :: proc(cg: ^Spv_CG) {
+	spv_ensure_assert_block(cg)
+	cg.assert_spec = spv.spec_const_false(&cg.m)
+	spv.decorate(&cg.m, cg.assert_spec, .SpecId, cg.disable_asserts_spec_id)
+	spv.name(&cg.m, cg.assert_spec, "_misl_disable_asserts")
 }
 
 spv_assert_rec_ptr :: proc(cg: ^Spv_CG) -> spv.Id {
-	return spv.convert_u_to_ptr(&cg.m, cg.assert_ptr_ty, cg.assert_spec)
+	return spv_pc_load_member(cg, 0, cg.assert_ptr_ty)
 }
 
 spv_assert_member_ptr :: proc(cg: ^Spv_CG, rec: spv.Id, member: u32, elem_ty: spv.Id) -> spv.Id {
@@ -663,18 +689,20 @@ spv_assert_member_ptr :: proc(cg: ^Spv_CG, rec: spv.Id, member: u32, elem_ty: sp
 
 spv_assert_try_claim :: proc(cg: ^Spv_CG) -> spv.Id {
 	tmp := spv_fn_var(cg, t_b32, "_claim")
-	zero64 := spv.const_u64(&cg.m, 0)
-	nz := spv.inot_equal(&cg.m, cg.assert_spec, zero64)
+	rec := spv_assert_rec_ptr(cg)
+	addr := spv.convert_ptr_to_u(&cg.m, spv.type_u64(&cg.m), rec)
+	ptr_ok := spv.inot_equal(&cg.m, addr, spv.const_u64(&cg.m, 0))
+	enabled := spv.logical_not(&cg.m, cg.assert_spec)
+	take := spv.logical_and(&cg.m, enabled, ptr_ok)
 	then_b := spv.block_new(&cg.m)
 	else_b := spv.block_new(&cg.m)
 	merge := spv.block_new(&cg.m)
 	spv.selection_merge(&cg.m, merge)
-	spv.branch_cond(&cg.m, nz, then_b, else_b)
+	spv.branch_cond(&cg.m, take, then_b, else_b)
 	spv_block(cg, else_b)
 	spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, false), t_b32))
 	spv.branch(&cg.m, merge)
 	spv_block(cg, then_b)
-	rec := spv_assert_rec_ptr(cg)
 	fired_p := spv_assert_member_ptr(cg, rec, 0, spv.type_u32(&cg.m))
 	scope := spv.const_u32(&cg.m, u32(spv.Scope.Device))
 	eq_sem := spv.const_u32(&cg.m, u32(spv.Memory_Semantics.AcquireRelease) | u32(spv.Memory_Semantics.UniformMemory))
@@ -801,8 +829,71 @@ spv_emit_slice_bounds :: proc(cg: ^Spv_CG, index_expr: ^Expr, idx_u32, len_i64: 
 	spv_block(cg, merge)
 }
 
+// One debugPrintf for the whole call. Enum names and bit-set members are chosen
+// with ifs, and each arm prints the complete format (the same NonSemantic.DebugPrintf
+// GLSL used). A leading "{" as its own call is what RenderDoc keeps when a fragment
+// shader floods the printf buffer.
+Pf_Kind :: enum {
+	Text,
+	Arg,
+	Enum,
+	Bits,
+}
+
+Pf_Part :: struct {
+	kind:   Pf_Kind,
+	text:   string,
+	spec:   string,
+	id:     spv.Id,
+	enum_t: ^Type_Enum,
+	bs:     ^Type_Bit_Set,
+	pretty: bool,
+	indent: int,
+}
+
+Spv_Printf :: struct {
+	cg:    ^Spv_CG,
+	text:  strings.Builder,
+	parts: [dynamic]Pf_Part,
+}
+
+spv_printf_init :: proc(p: ^Spv_Printf, cg: ^Spv_CG) {
+	p.cg = cg
+	strings.builder_init(&p.text, context.temp_allocator)
+	p.parts = make([dynamic]Pf_Part, context.temp_allocator)
+}
+
+spv_printf_commit_text :: proc(p: ^Spv_Printf) {
+	if strings.builder_len(p.text) == 0 {
+		return
+	}
+	s := strings.clone(strings.to_string(p.text), context.temp_allocator)
+	append(&p.parts, Pf_Part{kind = .Text, text = s})
+	strings.builder_reset(&p.text)
+}
+
+spv_printf_lit :: proc(p: ^Spv_Printf, s: string) {
+	if s == "" {
+		return
+	}
+	strings.write_string(&p.text, s)
+}
+
+spv_printf_val :: proc(p: ^Spv_Printf, spec: string, v: spv.Id) {
+	spv_printf_commit_text(p)
+	append(&p.parts, Pf_Part{kind = .Arg, spec = spec, id = v})
+}
+
 spv_printf :: proc(cg: ^Spv_CG, call: ^Call_Expr, append_nl: bool) {
-	if len(call.args) < 1 {
+	p: Spv_Printf
+	spv_printf_init(&p, cg)
+	spv_printf_append(&p, call, append_nl)
+	spv_printf_commit_text(&p)
+	spv_printf_emit(&p)
+}
+
+spv_printf_append :: proc(p: ^Spv_Printf, call: ^Call_Expr, append_nl: bool) {
+	if call == nil || len(call.args) < 1 {
 		return
 	}
 	format, _ := call.args[0].tav.value.(string)
@@ -814,11 +905,11 @@ spv_printf :: proc(cg: ^Spv_CG, call: ^Call_Expr, append_nl: bool) {
 			for i < len(format) && format[i] != '%' {
 				i += 1
 			}
-			spv_printf_lit(cg, format[start:i])
+			spv_printf_lit(p, format[start:i])
 			continue
 		}
 		if i + 1 < len(format) && format[i + 1] == '%' {
-			spv_printf_lit(cg, "%")
+			spv_printf_lit(p, "%%")
 			i += 2
 			continue
 		}
@@ -835,78 +926,226 @@ spv_printf :: proc(cg: ^Spv_CG, call: ^Call_Expr, append_nl: bool) {
 		if arg_i >= len(call.args) {
 			continue
 		}
-		spv_printf_value(cg, call.args[arg_i], pretty, 0)
+		t := default_type(call.args[arg_i].tav.type)
+		v := spv_rvalue(p.cg, call.args[arg_i])
 		arg_i += 1
+		spv_printf_typed(p, t, v, pretty, 0)
 	}
 	if append_nl {
-		spv_printf_lit(cg, "\n")
+		spv_printf_lit(p, "\n")
 	}
 }
 
-spv_printf_lit :: proc(cg: ^Spv_CG, s: string) {
-	if s == "" {
-		return
+spv_printf_call_variants :: proc(call: ^Call_Expr) -> int {
+	if call == nil || len(call.args) < 1 {
+		return 1
 	}
-	sid := spv.op_string(&cg.m, s)
-	spv.debug_printf(&cg.m, sid, {})
+	format, is_str := call.args[0].tav.value.(string)
+	if !is_str {
+		return 1
+	}
+	prod := 1
+	arg_i := 1
+	i := 0
+	for i < len(format) {
+		if format[i] != '%' {
+			i += 1
+			continue
+		}
+		if i + 1 < len(format) && format[i + 1] == '%' {
+			i += 2
+			continue
+		}
+		if i + 1 < len(format) && format[i + 1] == '#' {
+			i += 1
+		}
+		if i + 1 >= len(format) || format[i + 1] != 'v' {
+			i += 1
+			continue
+		}
+		i += 2
+		if arg_i >= len(call.args) {
+			break
+		}
+		prod *= spv_printf_type_variants(call.args[arg_i].tav.type)
+		arg_i += 1
+		if prod > 4096 {
+			return prod
+		}
+	}
+	if prod < 1 {
+		return 1
+	}
+	return prod
 }
 
-spv_printf_fmt :: proc(cg: ^Spv_CG, spec: string, v: spv.Id) {
-	sid := spv.op_string(&cg.m, spec)
-	spv.debug_printf(&cg.m, sid, {v})
-}
-
-spv_printf_value :: proc(cg: ^Spv_CG, expr: ^Expr, pretty: bool, indent: int) {
-	t := default_type(expr.tav.type)
-	v := spv_rvalue(cg, expr)
-	spv_printf_typed(cg, t, v, pretty, indent)
-}
-
-spv_printf_typed :: proc(cg: ^Spv_CG, t: ^Type, v: spv.Id, pretty: bool, indent: int) {
+spv_printf_type_variants :: proc(t: ^Type) -> int {
 	t := default_type(t)
-	if spec, vv, ok := spv_printf_scalar(cg, t, v); ok {
-		spv_printf_fmt(cg, spec, vv)
-		return
+	if t == nil {
+		return 1
 	}
 	if type_is_enum(t) {
 		et := t.derived.(^Type_Enum)
-		spv_printf_enum(cg, et, v)
+		n := 0
+		seen := make(map[i128]bool, context.temp_allocator)
+		for field in et.fields {
+			if field == nil do continue
+			val := exact_value_to_i128(field.value)
+			if val in seen do continue
+			seen[val] = true
+			n += 1
+		}
+		return n + 1
+	}
+	if type_is_bit_set(t) {
+		bs := t.derived.(^Type_Bit_Set)
+		et, is_enum := bs.elem.derived.(^Type_Enum)
+		if !is_enum {
+			return 1
+		}
+		n := 0
+		seen := make(map[i128]bool, context.temp_allocator)
+		for field in et.fields {
+			if field == nil do continue
+			bit := exact_value_to_i128(field.value)
+			if bit < 0 || bit >= 32 do continue
+			if bit in seen do continue
+			seen[bit] = true
+			n += 1
+		}
+		if n > 8 {
+			return 1
+		}
+		return (1 << uint(n)) + 1
+	}
+	if st, ok := t.derived.(^Type_Struct); ok && st.fields != nil {
+		prod := 1
+		for field in st.fields.variables {
+			if field == nil || field.type == nil do continue
+			prod *= spv_printf_type_variants(field.type)
+			if prod > 4096 {
+				return prod
+			}
+		}
+		return prod
+	}
+	repeat := proc(elem: ^Type, count: int) -> int {
+		n := spv_printf_type_variants(elem)
+		if n <= 1 || count <= 0 {
+			return 1
+		}
+		prod := 1
+		for _ in 0 ..< count {
+			prod *= n
+			if prod > 4096 {
+				return prod
+			}
+		}
+		return prod
+	}
+	if type_is_vector(t) {
+		vt := t.derived.(^Type_Vector)
+		return repeat(vt.elem, vt.len)
+	}
+	if type_is_array(t) {
+		at := t.derived.(^Type_Array)
+		return repeat(at.elem, at.len)
+	}
+	if type_is_matrix(t) {
+		mt := t.derived.(^Type_Matrix)
+		return repeat(mt.elem, mt.rows * mt.columns)
+	}
+	return 1
+}
+
+spv_printf_typed :: proc(p: ^Spv_Printf, t: ^Type, v: spv.Id, pretty: bool, indent: int) {
+	cg := p.cg
+	t := default_type(t)
+	if spec, vv, ok := spv_printf_scalar(cg, t, v); ok {
+		spv_printf_val(p, spec, vv)
+		return
+	}
+	if type_is_enum(t) {
+		spv_printf_commit_text(p)
+		append(&p.parts, Pf_Part{
+			kind = .Enum,
+			id = v,
+			enum_t = t.derived.(^Type_Enum),
+		})
 		return
 	}
 	if type_is_bit_set(t) {
 		bs := t.derived.(^Type_Bit_Set)
-		spv_printf_bit_set(cg, bs, v, pretty, indent)
+		if _, is_enum := bs.elem.derived.(^Type_Enum); is_enum {
+			spv_printf_commit_text(p)
+			append(&p.parts, Pf_Part{
+				kind = .Bits,
+				id = v,
+				bs = bs,
+				pretty = pretty,
+				indent = indent,
+			})
+		} else if spec, vv, ok := spv_printf_scalar(cg, bs.underlying, v); ok {
+			spv_printf_val(p, spec, vv)
+		} else {
+			spv_printf_lit(p, "<bit_set>")
+		}
 		return
 	}
 	if type_is_vector(t) {
 		vt := t.derived.(^Type_Vector)
-		spv_printf_lit(cg, "{")
-		for i in 0 ..< vt.len {
-			if i > 0 {
-				spv_printf_lit(cg, ", ")
+		if !pretty {
+			if spec, ok := printf_vector_fast_spec(vt); ok {
+				spv_printf_lit(p, "{")
+				spv_printf_val(p, spec, v)
+				spv_printf_lit(p, "}")
+				return
 			}
-			comp := spv.composite_extract(&cg.m, spv_type(cg, vt.elem), v, u32(i))
-			spv_printf_typed(cg, vt.elem, comp, pretty, indent)
 		}
-		spv_printf_lit(cg, "}")
+		spv_printf_sequence(p, vt.len, vt.elem, v, pretty, indent)
+		return
+	}
+	if type_is_array(t) {
+		at := t.derived.(^Type_Array)
+		spv_printf_sequence(p, at.len, at.elem, v, pretty, indent)
+		return
+	}
+	if type_is_matrix(t) {
+		mt := t.derived.(^Type_Matrix)
+		col_ty := new_type(Type_Vector)
+		col_ty.elem = mt.elem
+		col_ty.len = mt.rows
+		spv_printf_lit(p, "{")
+		spv_printf_lit(p, printf_nl_indent(pretty, indent + 1))
+		for c in 0 ..< mt.columns {
+			if c > 0 {
+				spv_printf_lit(p, printf_sep(pretty, indent + 1))
+			}
+			col := spv.composite_extract(&cg.m, spv_type(cg, col_ty), v, u32(c))
+			spv_printf_sequence(p, mt.rows, mt.elem, col, pretty, indent + 1)
+		}
+		spv_printf_lit(p, printf_nl_indent(pretty, indent))
+		spv_printf_lit(p, "}")
 		return
 	}
 	if st, ok := t.derived.(^Type_Struct); ok && st.fields != nil {
-		spv_printf_lit(cg, "{")
+		spv_printf_lit(p, "{")
+		spv_printf_lit(p, printf_nl_indent(pretty, indent + 1))
 		for field, i in st.fields.variables {
+			if field == nil || field.type == nil do continue
 			if i > 0 {
-				spv_printf_lit(cg, ", ")
+				spv_printf_lit(p, printf_sep(pretty, indent + 1))
 			}
-			spv_printf_lit(cg, fmt.tprintf("%s = ", field.name))
+			spv_printf_lit(p, fmt.tprintf("%s = ", field.name))
 			part := spv.composite_extract(&cg.m, spv_type(cg, field.type), v, u32(i))
-			spv_printf_typed(cg, field.type, part, pretty, indent + 1)
+			spv_printf_typed(p, field.type, part, pretty, indent + 1)
 		}
-		spv_printf_lit(cg, "}")
+		spv_printf_lit(p, printf_nl_indent(pretty, indent))
+		spv_printf_lit(p, "}")
 		return
 	}
 	if type_is_pointer(t) || type_is_multi_pointer(t) {
-		u := spv.convert_ptr_to_u(&cg.m, spv.type_u64(&cg.m), v)
-		spv_printf_fmt(cg, "%lu", u)
+		spv_printf_val(p, "%p", v)
 		return
 	}
 	if type_is_slice(t) {
@@ -915,20 +1154,32 @@ spv_printf_typed :: proc(cg: ^Spv_CG, t: ^Type, v: spv.Id, pretty: bool, indent:
 		ptr_ty := spv_psb_ptr(cg, st.elem, rw).ptr_ty
 		data := spv.composite_extract(&cg.m, ptr_ty, v, 0)
 		ln := spv.composite_extract(&cg.m, spv.type_i64(&cg.m), v, 1)
-		spv_printf_lit(cg, "{data = ")
-		spv_printf_typed(cg, new_type_dummy_ptr(st.elem), data, pretty, indent)
-		spv_printf_lit(cg, ", len = ")
-		spv_printf_fmt(cg, "%lu", spv.bitcast(&cg.m, spv.type_u64(&cg.m), ln))
-		spv_printf_lit(cg, "}")
+		spv_printf_lit(p, "{data = ")
+		spv_printf_val(p, "%p", data)
+		spv_printf_lit(p, ", len = ")
+		spv_printf_val(p, "%lu", spv.bitcast(&cg.m, spv.type_u64(&cg.m), ln))
+		spv_printf_lit(p, "}")
 		return
 	}
-	spv_printf_lit(cg, "<unsupported>")
+	spv_printf_lit(p, "<unsupported>")
 }
 
-new_type_dummy_ptr :: proc(elem: ^Type) -> ^Type {
-	p := new_type(Type_Pointer)
-	p.elem = elem
-	return p
+spv_printf_sequence :: proc(p: ^Spv_Printf, count: int, elem: ^Type, v: spv.Id, pretty: bool, indent: int) {
+	spv_printf_lit(p, "{")
+	if count == 0 {
+		spv_printf_lit(p, "}")
+		return
+	}
+	spv_printf_lit(p, printf_nl_indent(pretty, indent + 1))
+	for i in 0 ..< count {
+		if i > 0 {
+			spv_printf_lit(p, printf_sep(pretty, indent + 1))
+		}
+		comp := spv.composite_extract(&p.cg.m, spv_type(p.cg, elem), v, u32(i))
+		spv_printf_typed(p, elem, comp, pretty, indent + 1)
+	}
+	spv_printf_lit(p, printf_nl_indent(pretty, indent))
+	spv_printf_lit(p, "}")
 }
 
 spv_printf_scalar :: proc(cg: ^Spv_CG, t: ^Type, v: spv.Id) -> (spec: string, out: spv.Id, ok: bool) {
@@ -967,89 +1218,225 @@ spv_printf_scalar :: proc(cg: ^Spv_CG, t: ^Type, v: spv.Id) -> (spec: string, ou
 	return "", v, false
 }
 
-spv_printf_enum :: proc(cg: ^Spv_CG, et: ^Type_Enum, v: spv.Id) {
-	done := spv_fn_var(cg, t_b32, "_pf_e")
-	spv.store(&cg.m, done, spv_from_bool(cg, spv.const_bool(&cg.m, false), t_b32))
+Pf_Alt :: struct {
+	text:       string,
+	expect:     i128,
+	has_expect: bool,
+	use_value:  bool,
+}
+
+Pf_Site :: struct {
+	part_i: int,
+	alts:   []Pf_Alt,
+}
+
+spv_printf_emit :: proc(p: ^Spv_Printf) {
+	sites := make([dynamic]Pf_Site, context.temp_allocator)
+	for part, i in p.parts {
+		#partial switch part.kind {
+		case .Enum:
+			append(&sites, Pf_Site{part_i = i, alts = spv_printf_enum_alts(part.enum_t)})
+		case .Bits:
+			alts, ok := spv_printf_bits_alts(part)
+			if !ok {
+				spec, vv, sok := spv_printf_scalar(p.cg, part.bs.underlying, part.id)
+				if sok {
+					p.parts[i] = Pf_Part{kind = .Arg, spec = spec, id = vv}
+				} else {
+					p.parts[i] = Pf_Part{kind = .Text, text = "<bit_set>"}
+				}
+				continue
+			}
+			append(&sites, Pf_Site{part_i = i, alts = alts})
+		}
+	}
+	if len(sites) == 0 {
+		spv_printf_emit_one(p, nil, nil)
+		return
+	}
+	choices := make([]int, len(sites), context.temp_allocator)
+	combos := make([dynamic][]int, context.temp_allocator)
+	spv_printf_combos(sites[:], 0, choices, &combos)
+	join := spv.block_new(&p.cg.m)
+	spv_printf_emit_chain(p, sites[:], combos[:], 0, join)
+	spv_block(p.cg, join)
+}
+
+spv_printf_enum_alts :: proc(et: ^Type_Enum) -> []Pf_Alt {
+	list := make([dynamic]Pf_Alt, context.temp_allocator)
 	seen := make(map[i128]bool, context.temp_allocator)
 	for field in et.fields {
+		if field == nil do continue
 		val := exact_value_to_i128(field.value)
 		if val in seen do continue
 		seen[val] = true
-		cv := spv_const_value(cg, et.base_type, field.value)
-		eq := spv.iequal(&cg.m, v, cv)
-		already := spv_as_bool(cg, spv.load(&cg.m, spv_type(cg, t_b32), done), t_b32)
-		take := spv.logical_and(&cg.m, spv.logical_not(&cg.m, already), eq)
-		then_b := spv.block_new(&cg.m)
-		else_b := spv.block_new(&cg.m)
-		spv.selection_merge(&cg.m, else_b)
-		spv.branch_cond(&cg.m, take, then_b, else_b)
-		spv_block(cg, then_b)
-		spv.store(&cg.m, done, spv_from_bool(cg, spv.const_bool(&cg.m, true), t_b32))
-		spv_printf_lit(cg, fmt.tprintf(".%s", field.name))
-		spv.branch_if_open(&cg.m, else_b)
-		spv_block(cg, else_b)
+		append(&list, Pf_Alt{
+			text = fmt.tprintf(".%s", field.name),
+			expect = val,
+			has_expect = true,
+		})
 	}
-	inv := spv.logical_not(&cg.m, spv_as_bool(cg, spv.load(&cg.m, spv_type(cg, t_b32), done), t_b32))
-	then_b := spv.block_new(&cg.m)
-	merge := spv.block_new(&cg.m)
-	spv.selection_merge(&cg.m, merge)
-	spv.branch_cond(&cg.m, inv, then_b, merge)
-	spv_block(cg, then_b)
-	spv_printf_lit(cg, "INVALID_ENUM")
-	spv.branch_if_open(&cg.m, merge)
-	spv_block(cg, merge)
+	append(&list, Pf_Alt{text = "INVALID_ENUM"})
+	return list[:]
 }
 
-spv_printf_bit_set :: proc(cg: ^Spv_CG, bs: ^Type_Bit_Set, v: spv.Id, pretty: bool, indent: int) {
-	spv_printf_lit(cg, "{" if !pretty else fmt.tprintf("{{\n%s", printf_indent(indent + 1)))
-	enum_t, ok := bs.elem.derived.(^Type_Enum)
-	if !ok {
-		spv_printf_lit(cg, "}")
-		return
+spv_printf_bits_alts :: proc(part: Pf_Part) -> (alts: []Pf_Alt, ok: bool) {
+	enum_t, is_enum := part.bs.elem.derived.(^Type_Enum)
+	if !is_enum {
+		return nil, false
 	}
-	first := spv_fn_var(cg, t_u32, "_pf_first")
-	spv.store(&cg.m, first, spv.const_u32(&cg.m, 1))
+	names := make([dynamic]string, context.temp_allocator)
+	bits := make([dynamic]i128, context.temp_allocator)
 	seen := make(map[i128]bool, context.temp_allocator)
 	for field in enum_t.fields {
+		if field == nil do continue
 		bit := exact_value_to_i128(field.value)
+		if bit < 0 || bit >= 32 do continue
 		if bit in seen do continue
 		seen[bit] = true
-		one := spv_const_value(cg, bs.underlying, exact_int(1))
-		sh := spv.shift_left(&cg.m, spv_type(cg, bs.underlying), one, spv_const_value(cg, bs.underlying, exact_int(bit)))
-		masked := spv.bitwise_and(&cg.m, spv_type(cg, bs.underlying), v, sh)
-		z := spv_zero(cg, bs.underlying)
-		hit := spv.inot_equal(&cg.m, masked, z)
-		then_b := spv.block_new(&cg.m)
-		merge := spv.block_new(&cg.m)
-		spv.selection_merge(&cg.m, merge)
-		spv.branch_cond(&cg.m, hit, then_b, merge)
-		spv_block(cg, then_b)
-		is_first := spv.iequal(&cg.m, spv.load(&cg.m, spv.type_u32(&cg.m), first), spv.const_u32(&cg.m, 1))
-		sep_t := spv.block_new(&cg.m)
-		sep_e := spv.block_new(&cg.m)
-		sep_m := spv.block_new(&cg.m)
-		spv.selection_merge(&cg.m, sep_m)
-		spv.branch_cond(&cg.m, is_first, sep_t, sep_e)
-		spv_block(cg, sep_t)
-		spv.store(&cg.m, first, spv.const_u32(&cg.m, 0))
-		spv.branch(&cg.m, sep_m)
-		spv_block(cg, sep_e)
-		if pretty {
-			spv_printf_lit(cg, fmt.tprintf(",\n%s", printf_indent(indent + 1)))
+		append(&names, field.name)
+		append(&bits, bit)
+	}
+	n := len(names)
+	if n > 8 {
+		return nil, false
+	}
+	list := make([dynamic]Pf_Alt, context.temp_allocator)
+	count := 1 << uint(n)
+	for mask in 0 ..< count {
+		expect: i128 = 0
+		b: strings.Builder
+		strings.builder_init(&b, context.temp_allocator)
+		if part.pretty {
+			strings.write_string(&b, "{\n")
+			strings.write_string(&b, printf_indent(part.indent + 1))
 		} else {
-			spv_printf_lit(cg, ", ")
+			strings.write_string(&b, "{")
 		}
-		spv.branch(&cg.m, sep_m)
-		spv_block(cg, sep_m)
-		spv_printf_lit(cg, fmt.tprintf(".%s", field.name))
-		spv.branch(&cg.m, merge)
-		spv_block(cg, merge)
+		first := true
+		for i in 0 ..< n {
+			if mask & (1 << uint(i)) == 0 do continue
+			expect |= i128(1) << uint(bits[i])
+			if !first {
+				if part.pretty {
+					strings.write_string(&b, ",\n")
+					strings.write_string(&b, printf_indent(part.indent + 1))
+				} else {
+					strings.write_string(&b, ", ")
+				}
+			}
+			first = false
+			strings.write_string(&b, ".")
+			strings.write_string(&b, names[i])
+		}
+		if part.pretty {
+			strings.write_string(&b, "\n")
+			strings.write_string(&b, printf_indent(part.indent))
+			strings.write_string(&b, "}")
+		} else {
+			strings.write_string(&b, "}")
+		}
+		append(&list, Pf_Alt{
+			text = strings.clone(strings.to_string(b), context.temp_allocator),
+			expect = expect,
+			has_expect = true,
+		})
 	}
-	if pretty {
-		spv_printf_lit(cg, fmt.tprintf("\n%s}}", printf_indent(indent)))
-	} else {
-		spv_printf_lit(cg, "}")
+	append(&list, Pf_Alt{use_value = true})
+	return list[:], true
+}
+
+spv_printf_combos :: proc(sites: []Pf_Site, si: int, choices: []int, out: ^[dynamic][]int) {
+	if si == len(sites) {
+		saved := make([]int, len(choices), context.temp_allocator)
+		copy(saved, choices)
+		append(out, saved)
+		return
 	}
+	for i in 0 ..< len(sites[si].alts) {
+		choices[si] = i
+		spv_printf_combos(sites, si + 1, choices, out)
+	}
+}
+
+spv_printf_emit_chain :: proc(p: ^Spv_Printf, sites: []Pf_Site, combos: [][]int, index: int, join: spv.Id) {
+	cg := p.cg
+	if index >= len(combos) - 1 {
+		if index == len(combos) - 1 {
+			spv_printf_emit_one(p, sites, combos[index])
+		}
+		spv.branch(&cg.m, join)
+		return
+	}
+	cond := spv_printf_combo_cond(p, sites, combos[index])
+	then_b := spv.block_new(&cg.m)
+	else_b := spv.block_new(&cg.m)
+	cont := spv.block_new(&cg.m)
+	spv.selection_merge(&cg.m, cont)
+	spv.branch_cond(&cg.m, cond, then_b, else_b)
+	spv_block(cg, then_b)
+	spv_printf_emit_one(p, sites, combos[index])
+	spv.branch(&cg.m, cont)
+	spv_block(cg, else_b)
+	spv_printf_emit_chain(p, sites, combos, index + 1, cont)
+	spv_block(cg, cont)
+	spv.branch(&cg.m, join)
+}
+
+spv_printf_combo_cond :: proc(p: ^Spv_Printf, sites: []Pf_Site, combo: []int) -> spv.Id {
+	cond := spv.NONE
+	for site, si in sites {
+		alt := site.alts[combo[si]]
+		if !alt.has_expect do continue
+		part := p.parts[site.part_i]
+		ty := part.bs.underlying if part.kind == .Bits else part.enum_t.base_type
+		cv := spv_const_value(p.cg, ty, exact_int(alt.expect))
+		eq := spv.iequal(&p.cg.m, part.id, cv)
+		if cond == spv.NONE {
+			cond = eq
+		} else {
+			cond = spv.logical_and(&p.cg.m, cond, eq)
+		}
+	}
+	return cond
+}
+
+spv_printf_emit_one :: proc(p: ^Spv_Printf, sites: []Pf_Site, combo: []int) {
+	alt_at := make(map[int]Pf_Alt, context.temp_allocator)
+	if combo != nil {
+		for site, si in sites {
+			alt_at[site.part_i] = site.alts[combo[si]]
+		}
+	}
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	args := make([dynamic]spv.Id, context.temp_allocator)
+	for part, i in p.parts {
+		#partial switch part.kind {
+		case .Text:
+			strings.write_string(&b, part.text)
+		case .Arg:
+			strings.write_string(&b, part.spec)
+			append(&args, part.id)
+		case .Enum, .Bits:
+			alt := alt_at[i]
+			if alt.use_value {
+				spec, vv, ok := spv_printf_scalar(p.cg, part.bs.underlying, part.id)
+				if ok {
+					strings.write_string(&b, spec)
+					append(&args, vv)
+				}
+			} else {
+				strings.write_string(&b, alt.text)
+			}
+		}
+	}
+	text := strings.to_string(b)
+	if text == "" && len(args) == 0 {
+		return
+	}
+	sid := spv.op_string(&p.cg.m, text)
+	spv.debug_printf(&p.cg.m, sid, args[:])
 }
 
 spv_ray_query_ptr :: proc(cg: ^Spv_CG, expr: ^Expr) -> spv.Id {
@@ -1131,7 +1518,7 @@ spv_fmag_exec_call :: proc(cg: ^Spv_CG, call: ^Call_Expr, dest_ptrs: []spv.Id, d
 		spv_err(cg, call.pos, "codegen_spirv: fmag.run is not available")
 		return
 	}
-	fn_id, fok := cg.fn_id[run]
+	fn_id, fok := spv_entity_fn(cg, run)
 	if !fok {
 		spv_err(cg, call.pos, "codegen_spirv: fmag.run was not emitted")
 		return

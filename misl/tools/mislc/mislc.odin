@@ -71,7 +71,7 @@ Options :: struct {
 	debug:        bool,
 	no_source:    bool,
 	named_entry:  bool,
-	assert_buffer_spec_id: u32,
+	disable_asserts_spec_id: u32,
 }
 
 print_usage :: proc() {
@@ -109,7 +109,7 @@ BUILD / EMIT
   -debug                     DebugInfo + OpLine + OpName/OpMemberName + embed MISL source
   -no-source                 With -debug: skip DebugSource text (no-op otherwise)
   -named-entry               Direct OpEntryPoint uses the MISL proc name (default is "main")
-  -assert-buffer-id:<n>      Assert-buffer SpecId (u32, default 0)
+  -disable-asserts-spec-id:<n>  Bool spec constant that disables assert claims (u32, default 0)
   -entry:<name>              Compile only this entry (repeatable)
   -pipeline:<name>           Compile this pipeline constant (stages + raster meta)
   -config:ident=value        Set a #config key for this check/compile (repeatable; covers imports)
@@ -263,21 +263,21 @@ parse_options :: proc(args: []string) -> (opt: Options, ok: bool) {
 			opt.no_source = true
 		case "named-entry":
 			opt.named_entry = true
-		case "assert-buffer-id":
+		case "disable-asserts-spec-id":
 			if !has_key {
-				fmt.eprintfln("mislc: use -assert-buffer-id:<n>")
+				fmt.eprintfln("mislc: use -disable-asserts-spec-id:<n>")
 				return opt, false
 			}
 			n, n_ok := strconv.parse_u64(value if has_value else key)
 			if !n_ok {
-				fmt.eprintfln("mislc: invalid -assert-buffer-id")
+				fmt.eprintfln("mislc: invalid -disable-asserts-spec-id")
 				return opt, false
 			}
 			if n > u64(max(u32)) {
-				fmt.eprintfln("mislc: -assert-buffer-id out of u32 range")
+				fmt.eprintfln("mislc: -disable-asserts-spec-id out of u32 range")
 				return opt, false
 			}
-			opt.assert_buffer_spec_id = u32(n)
+			opt.disable_asserts_spec_id = u32(n)
 		case "entry":
 			if !has_key {
 				fmt.eprintfln("mislc: use -entry:<name>")
@@ -395,7 +395,7 @@ parse_options :: proc(args: []string) -> (opt: Options, ok: bool) {
 
 	if opt.no_gfx {
 		opt.no_bounds_check = true
-		// opt.disable_asserts = true
+		opt.disable_asserts = true
 	}
 
 	if len(opt.inputs) == 0 {
@@ -544,7 +544,7 @@ mislc_gpu_target :: proc(opt: Options) -> misl.Target {
 		opt = opt.spirv_opt,
 		flags = mislc_flags(opt),
 		no_gfx_compatibility = opt.no_gfx,
-		assert_buffer_spec_id = opt.assert_buffer_spec_id,
+		disable_asserts_spec_id = opt.disable_asserts_spec_id,
 	}
 }
 

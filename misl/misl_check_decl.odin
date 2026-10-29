@@ -26,7 +26,9 @@ guess_const_entity_kind :: proc(value: ^Expr) -> Entity_Kind {
 }
 
 collect_one_const_value_decl :: proc(c: ^Checker, s: ^Value_Decl, scope: ^Scope, out: ^[dynamic]^Entity) {
-	if s.is_mutable do return
+	is_spec := value_decl_spec_attr_count(s) > 0
+	if s.is_mutable && !is_spec do return
+	if is_spec && scope.kind != .Module do return
 	for name, name_i in s.names {
 		ident, is_ident := name.derived.(^Ident)
 		if !is_ident {
@@ -46,6 +48,9 @@ collect_one_const_value_decl :: proc(c: ^Checker, s: ^Value_Decl, scope: ^Scope,
 			value = s.values[name_i]
 		}
 		kind := guess_const_entity_kind(value)
+		if is_spec && s.is_mutable {
+			kind = .Specialization_Constant
+		}
 		e := new_entity(kind, scope, ident.pos, ident.name, nil)
 		e.decl = s
 		e.decl_value_index = name_i
@@ -304,7 +309,7 @@ which_taken_clause_from_tav :: proc(v: ^Which_Stmt) -> ^Case_Clause {
 ensure_entity_resolved :: proc(c: ^Checker, e: ^Entity) {
 	if e == nil do return
 	#partial switch e.kind {
-	case .Constant, .Type_Name, .Procedure, .Entry, .Pipeline, .Proc_Group, .Builtin:
+	case .Constant, .Specialization_Constant, .Type_Name, .Procedure, .Entry, .Pipeline, .Proc_Group, .Builtin, .Semantic:
 		if e.state != .Resolved && e.decl != nil {
 			decl_resolve(c, e)
 		}
@@ -328,6 +333,12 @@ decl_resolve :: proc(c: ^Checker, e: ^Entity) {
 	e.state = .In_Progress
 	defer if e.state == .In_Progress {
 		e.state = .Resolved
+	}
+
+	if e.kind == .Specialization_Constant {
+		resolve_spec_const(c, e)
+		e.state = .Resolved
+		return
 	}
 
 	decl := e.decl
@@ -455,6 +466,18 @@ decl_resolve :: proc(c: ^Checker, e: ^Entity) {
 					check_err(c, value_expr.pos, "constant arrays must have scalar elements, got '%s'", string_from_type(arr.elem))
 				}
 			}
+		}
+	case .Semantic:
+		e.kind = .Semantic
+		e.semantic = v.semantic
+		e.type = v.type
+		e.value = v.value
+		// `B :: A` names A's location: uses of B match uses of A.
+		if alias := entity_from_expr(value_expr); alias != nil && alias.kind == .Semantic {
+			e.aliased_of = alias.aliased_of if alias.aliased_of != nil else alias
+		}
+		if v.semantic == .Inout && e.owner_proc != nil {
+			check_err(c, value_expr.pos, "#inout must be declared at file scope")
 		}
 	case .Proc, .Shader:
 		// Should have been handled via Proc_Lit above
@@ -589,6 +612,9 @@ check_stmt_after_const_collect :: proc(c: ^Checker, stmt: ^Stmt) -> (diverging: 
 	case ^Value_Decl:
 		if !d.is_mutable {
 			// Already collected + resolved
+			return false
+		}
+		if value_decl_spec_attr_count(d) > 0 && c.curr_proc == nil {
 			return false
 		}
 		check_value_decl(c, d)
@@ -1124,6 +1150,8 @@ check_decl_attributes :: proc(c: ^Checker, decl: ^Value_Decl, e: ^Entity, proc_t
 						continue
 					}
 					e.flags += {.Ambient_Builtin}
+				case "specialization_constant":
+					check_err(c, ident.pos, "expected 'specialization_constant = <id>'")
 				case:
 					check_err(c, ident.pos, "unknown attribute '%s'", ident.name)
 				}
@@ -1155,7 +1183,13 @@ check_decl_attributes :: proc(c: ^Checker, decl: ^Value_Decl, e: ^Entity, proc_t
 					check_err(c, fv.pos, "'@(size=…)' is only allowed on compute entry procedures")
 					continue
 				}
-				proc_type.local_size = check_compute_local_size(c, fv.value)
+				sized := check_compute_local_size(c, fv.value)
+				proc_type.local_size = sized.axes
+				proc_type.local_size_spec = sized.spec
+			case "specialization_constant":
+				if e.kind != .Specialization_Constant {
+					check_err(c, name_ident.pos, "specialization constants must be declared as 'name: T' or 'name: T = value'")
+				}
 			case:
 				check_err(c, name_ident.pos, "unknown attribute '%s'", name_ident.name)
 			}
@@ -1163,90 +1197,71 @@ check_decl_attributes :: proc(c: ^Checker, decl: ^Value_Decl, e: ^Entity, proc_t
 	}
 }
 
-check_compute_local_size :: proc(c: ^Checker, expr: ^Expr) -> [3]u32 {
+Compute_Local_Size :: struct {
+	axes: [3]u32,
+	spec: [3]^Entity,
+}
+
+check_compute_local_size :: proc(c: ^Checker, expr: ^Expr) -> Compute_Local_Size {
 	result := [3]u32{1, 1, 1}
-	if expr == nil do return result
+	spec: [3]^Entity
+	if expr == nil do return {result, spec}
+
+	finish :: proc(c: ^Checker, pos: Token_Pos, result: [3]u32, spec: [3]^Entity) -> Compute_Local_Size {
+		return {validate_local_size(c, pos, result), spec}
+	}
 
 	// Untyped compound {x}, {x,y}, {x,y,z}
 	if lit, is_lit := expr.derived.(^Comp_Lit); is_lit && lit.type == nil {
 		if len(lit.elems) < 1 || len(lit.elems) > 3 {
 			check_err(c, expr.pos, "'@(size=…)' compound expects 1 to 3 components, got %d", len(lit.elems))
-			return result
+			return {result, spec}
 		}
 		for elem, i in lit.elems {
 			if _, is_fv := elem.derived.(^Field_Value); is_fv {
 				check_err(c, elem.pos, "'@(size=…)' components must be positional constants")
-				return result
+				return {result, spec}
 			}
-			op := check_expr(c, elem)
-			if op.mode != .Constant || !type_is_integer(op.type) {
-				check_err(c, elem.pos, "'@(size=…)' component must be an integer constant")
-				return result
-			}
-			val := exact_value_to_i128(op.value)
-			if val < 1 {
-				check_err(c, elem.pos, "'@(size=…)' component must be >= 1, got %v", val)
-				return result
-			}
-			result[i] = u32(val)
+			val, axis, ok := take_local_size_axis(c, elem)
+			if !ok do return {result, spec}
+			result[i] = val
+			spec[i] = axis
 		}
-		return validate_local_size(c, expr.pos, result)
+		return finish(c, expr.pos, result, spec)
 	}
 
+	val, axis, ok := take_local_size_axis(c, expr)
+	if !ok do return {result, spec}
+	result[0] = val
+	spec[0] = axis
+	return finish(c, expr.pos, result, spec)
+}
+
+take_local_size_axis :: proc(c: ^Checker, expr: ^Expr) -> (val: u32, spec: ^Entity, ok: bool) {
 	op := check_expr(c, expr)
-	if op.mode != .Constant {
-		check_err(c, expr.pos, "'@(size=…)' value must be a compile-time constant")
-		return result
+	if op.mode == .Spec_Constant {
+		e := entity_from_expr(expr)
+		if e == nil || e.kind != .Specialization_Constant || !type_eq(e.type, t_u32) {
+			check_err(c, expr.pos, "'@(size=…)' specialization constant must be u32, got '%s'", string_from_type(op.type))
+			return 1, nil, false
+		}
+		n := exact_value_to_i128(e.value)
+		if n < 1 {
+			check_err(c, expr.pos, "'@(size=…)' specialization constant default must be >= 1, got %v", n)
+			return 1, nil, false
+		}
+		return u32(n), e, true
 	}
-
-	// Scalar → (X,1,1)
-	if type_is_integer(op.type) || (type_is_numeric(op.type) && type_is_implicit_castable(op.type, t_u32)) {
-		if !type_is_implicit_castable(op.type, t_u32) && !type_is_castable(op.type, t_u32) {
-			check_err(c, expr.pos, "'@(size=…)' scalar must convert to u32")
-			return result
-		}
-		val := exact_value_to_i128(op.value)
-		if val < 1 {
-			check_err(c, expr.pos, "'@(size=…)' must be >= 1, got %v", val)
-			return result
-		}
-		result[0] = u32(val)
-		return validate_local_size(c, expr.pos, result)
+	if op.mode != .Constant || op.value == nil || !type_is_integer(op.type) {
+		check_err(c, expr.pos, "'@(size=…)' component must be an integer constant or a u32 specialization constant")
+		return 1, nil, false
 	}
-
-	if vec, is_vec := op.type.derived.(^Type_Vector); is_vec {
-		if !type_eq(vec.elem, t_u32) && !type_is_implicit_castable(vec.elem, t_u32) && !type_is_castable(vec.elem, t_u32) {
-			check_err(c, expr.pos, "'@(size=…)' vector elements must convert to u32")
-			return result
-		}
-		if vec.len < 2 || vec.len > 3 {
-			check_err(c, expr.pos, "'@(size=…)' vector must be [2]u32 or [3]u32, got '%s'", string_from_type(op.type))
-			return result
-		}
-		// Vector constant values aren't structured in Exact_Value easily — re-check as compound if Comp_Lit typed
-		if lit, is_lit := expr.derived.(^Comp_Lit); is_lit {
-			for elem, i in lit.elems {
-				if i >= int(vec.len) do break
-				elem_op := check_expr(c, elem)
-				if elem_op.mode != .Constant {
-					check_err(c, elem.pos, "'@(size=…)' component must be constant")
-					return result
-				}
-				val := exact_value_to_i128(elem_op.value)
-				if val < 1 {
-					check_err(c, elem.pos, "'@(size=…)' component must be >= 1")
-					return result
-				}
-				result[i] = u32(val)
-			}
-			return validate_local_size(c, expr.pos, result)
-		}
-		check_err(c, expr.pos, "'@(size=…)' vector must be a compound literal")
-		return result
+	n := exact_value_to_i128(op.value)
+	if n < 1 {
+		check_err(c, expr.pos, "'@(size=…)' component must be >= 1, got %v", n)
+		return 1, nil, false
 	}
-
-	check_err(c, expr.pos, "'@(size=…)' expects u32, [2]u32, or [3]u32, got '%s'", string_from_type(op.type))
-	return result
+	return u32(n), nil, true
 }
 
 validate_local_size :: proc(c: ^Checker, pos: Token_Pos, size: [3]u32) -> [3]u32 {
@@ -1272,4 +1287,180 @@ exact_value_to_i128 :: proc(v: Exact_Value) -> i128 {
 	case f64: return i128(x)
 	}
 	return 0
+}
+
+value_decl_spec_attr_count :: proc(decl: ^Value_Decl) -> int {
+	if decl == nil do return 0
+	n := 0
+	for attr in decl.attributes {
+		for elem in attr.elems {
+			if fv, ok := elem.derived.(^Field_Value); ok {
+				if ident, is_ident := fv.field.derived.(^Ident); is_ident && ident.name == "specialization_constant" {
+					n += 1
+				}
+			} else if ident, is_ident := elem.derived.(^Ident); is_ident && ident.name == "specialization_constant" {
+				n += 1
+			}
+		}
+	}
+	return n
+}
+
+spec_const_type_ok :: proc(t: ^Type) -> bool {
+	return type_eq(t, t_u32) || type_eq(t, t_i32) || type_eq(t, t_f32) || type_eq(t, t_b32)
+}
+
+spec_const_zero :: proc(t: ^Type) -> Exact_Value {
+	if type_eq(t, t_b32) do return exact_bool(false)
+	if type_eq(t, t_f32) do return exact_float(0)
+	return exact_int(0)
+}
+
+resolve_spec_const :: proc(c: ^Checker, e: ^Entity) {
+	decl := e.decl
+	if decl == nil {
+		check_err(c, e.pos, "specialization constant '%s' is missing a declaration", e.name)
+		e.type = t_invalid
+		return
+	}
+	if c.compile_mode == .FMAG {
+		check_err(c, decl.pos, "specialization constants are not allowed in an FMAG compile")
+	}
+	if e.owner_proc != nil || (e.scope != nil && e.scope.kind != .Module) {
+		check_err(c, decl.pos, "specialization constants are only allowed at file scope")
+	}
+	if len(decl.names) != 1 {
+		check_err(c, decl.pos, "a specialization constant declaration must have exactly one name")
+	}
+	if !decl.is_mutable {
+		check_err(c, decl.pos, "specialization constants must be declared as 'name: T' or 'name: T = value'")
+	}
+	if decl.type == nil {
+		check_err(c, decl.pos, "specialization constants require an explicit type")
+		e.type = t_invalid
+		return
+	}
+	t := check_type(c, decl.type)
+	e.type = t
+	if !spec_const_type_ok(t) {
+		check_err(c, decl.type.pos, "specialization constant must be u32, i32, f32, or b32, got '%s'", string_from_type(t))
+		e.type = t_invalid
+	}
+
+	id, id_ok := spec_const_attr_id(c, decl)
+	if id_ok {
+		e.spec_const_id = id
+		reserved := c.check_target.disable_asserts_spec_id
+		if id == reserved {
+			check_err(c, decl.pos, "specialization constant id %d is reserved", id)
+		}
+		if c.check_target.no_gfx_compatibility && (id == NO_GFX_LOCAL_SIZE_X_ID || id == NO_GFX_LOCAL_SIZE_Y_ID || id == NO_GFX_LOCAL_SIZE_Z_ID) {
+			check_err(c, decl.pos, "specialization constant id %d is reserved", id)
+		}
+	}
+
+	if len(decl.values) == 0 || decl.values[0] == nil {
+		e.value = spec_const_zero(t)
+	} else {
+		value_expr := decl.values[0]
+		if _, is_undef := unparen_expr(value_expr).derived.(^Undef); is_undef {
+			check_err(c, value_expr.pos, "specialization constant initializer cannot be uninitialized")
+			e.value = spec_const_zero(t)
+		} else {
+			v := check_expr(c, value_expr, type_hint = t)
+			if v.mode == .Spec_Constant {
+				check_err(c, value_expr.pos, "specialization constant initializer cannot use a specialization constant")
+			} else if v.mode != .Constant || v.value == nil {
+				check_err(c, value_expr.pos, "specialization constant initializer must be a constant")
+			} else {
+				if type_is_untyped(v.type) {
+					convert_to_typed(c, &v, t)
+				} else if !type_eq(v.type, t) && type_is_implicit_castable(v.type, t) {
+					v.type = t
+				}
+				if v.mode == .Constant {
+					e.value = v.value
+				} else {
+					e.value = spec_const_zero(t)
+				}
+			}
+		}
+	}
+	if e.ident != nil {
+		e.ident.tav.type = e.type
+		e.ident.tav.mode = .Spec_Constant
+	}
+}
+
+spec_const_attr_id :: proc(c: ^Checker, decl: ^Value_Decl) -> (id: u32, ok: bool) {
+	found := 0
+	ok = true
+	for attr in decl.attributes {
+		for elem in attr.elems {
+			name: string
+			value: ^Expr
+			if fv, is_fv := elem.derived.(^Field_Value); is_fv {
+				ident, is_ident := fv.field.derived.(^Ident)
+				if !is_ident || ident.name != "specialization_constant" do continue
+				name = ident.name
+				value = fv.value
+				_ = name
+			} else if ident, is_ident := elem.derived.(^Ident); is_ident && ident.name == "specialization_constant" {
+				check_err(c, ident.pos, "expected 'specialization_constant = <id>'")
+				ok = false
+				found += 1
+				continue
+			} else {
+				continue
+			}
+			found += 1
+			if found > 1 {
+				check_err(c, elem.pos, "duplicate 'specialization_constant' attribute")
+				ok = false
+				continue
+			}
+			op := check_expr(c, value)
+			if op.mode != .Constant || op.value == nil || !type_is_integer(op.type) {
+				check_err(c, value.pos, "specialization constant id must be an integer constant")
+				ok = false
+				continue
+			}
+			n := exact_value_to_i128(op.value)
+			if n < 0 || n > i128(max(u32)) {
+				check_err(c, value.pos, "specialization constant id must fit in u32, got %v", n)
+				ok = false
+				continue
+			}
+			id = u32(n)
+		}
+	}
+	if found == 0 {
+		check_err(c, decl.pos, "expected 'specialization_constant = <id>'")
+		ok = false
+	}
+	return
+}
+
+check_spec_const_ids :: proc(c: ^Checker) {
+	seen := make(map[u32]^Entity, context.temp_allocator)
+	visited := make(map[^Module]bool, context.temp_allocator)
+	walk :: proc(c: ^Checker, m: ^Module, seen: ^map[u32]^Entity, visited: ^map[^Module]bool) {
+		if m == nil || m.kind == .Builtin || m.kind == .Synthetic do return
+		if m in visited^ do return
+		visited^[m] = true
+		for dep in m.imports_resolved {
+			walk(c, dep, seen, visited)
+		}
+		for e in m.definitions {
+			if e == nil || e.kind != .Specialization_Constant do continue
+			if prev, exists := seen[e.spec_const_id]; exists {
+				if prev != e {
+					check_err(c, e.pos, "duplicate specialization constant id %d", e.spec_const_id)
+				}
+			} else {
+				seen[e.spec_const_id] = e
+			}
+		}
+	}
+	walk(c, c.module, &seen, &visited)
 }

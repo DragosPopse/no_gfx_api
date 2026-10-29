@@ -178,7 +178,7 @@ ast_find_at_offset :: proc(module: ^misl.Module, offset: int) -> Ast_Hit {
 			}
 			walk_expr(f.type, offset, hit, best_span, best_call_span)
 			walk_expr(f.default_value, offset, hit, best_span, best_call_span)
-			consider_ident(f.semantics, offset, hit, best_span)
+			walk_expr(f.semantics, offset, hit, best_span, best_call_span)
 		}
 	}
 
@@ -436,7 +436,7 @@ ast_collect_idents_for_entity :: proc(module: ^misl.Module, entity: ^misl.Entity
 			}
 			walk_expr(f.type, entity, out)
 			walk_expr(f.default_value, entity, out)
-			visit_ident(f.semantics, entity, out)
+			walk_expr(f.semantics, entity, out)
 		}
 	}
 

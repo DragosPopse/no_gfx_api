@@ -14,7 +14,7 @@ import "base:runtime"
 
 Allowed_Semantics_Struct_Fields :: Semantics {
 	.None,
-	.Custom,
+	.Inout,
 	.Position,
 	.Target,
 }
@@ -22,15 +22,17 @@ Allowed_Semantics_Struct_Fields :: Semantics {
 // TODO(Dragos): this should be somewhat recursive, we may return a struct that has these semantics
 Allowed_Semantics_Shader_Results :: Semantics {
 	.None,
-	.Custom,
+	.Inout,
 	.Target,
 	.Position,
+	.Depth,
 }
 
 // TODO(Dragos): We should separate this for different stage types
 Allowed_Semantics_Shader_Params :: Semantics {
 	.None,
-	.Custom,
+	.Inout,
+	.Position, // fragment only: gl_FragCoord
 	.Vertex_ID,
 	.Instance_ID,
 	.Data,
@@ -39,7 +41,6 @@ Allowed_Semantics_Shader_Params :: Semantics {
 
 Allowed_Semantics_Compute_Params :: Semantics {
 	.None,
-	.Custom,
 	.Data,
 	.Global_Thread,
 	.Group_Thread,
@@ -52,7 +53,7 @@ Allowed_Semantics_Compute_Params :: Semantics {
 Semantics :: bit_set[Semantic]
 Semantic :: enum {
 	None,
-	Custom,
+	Inout, // bound to an `#inout` location
 	Position,
 	Target,
 	Vertex_ID,
@@ -65,6 +66,7 @@ Semantic :: enum {
 	Group_Index,
 	Num_Groups,
 	Group_Size,
+	Depth,
 }
 
 Semantic_Info :: struct {
@@ -74,7 +76,7 @@ Semantic_Info :: struct {
 
 semantic_names :: [Semantic]Semantic_Info {
 	.None = {},
-	.Custom = {},
+	.Inout = {},
 	.Position = {
 		"SV_Position",
 		"Clip-space vertex position.\n\n**Where:** struct fields; vertex/fragment results\n**GLSL:** `gl_Position` (output)",
@@ -123,6 +125,18 @@ semantic_names :: [Semantic]Semantic_Info {
 		"SV_Group_Size",
 		"Workgroup size (local size).\n\n**Where:** compute parameters\n**Type:** `[3]u32`\n**GLSL:** `gl_WorkGroupSize`",
 	},
+	.Depth = {
+		"SV_Depth",
+		"Fragment depth written in place of the interpolated one.\n\n**Where:** fragment results\n**Type:** `f32`\n**GLSL:** `gl_FragDepth` (output, `DepthReplacing`)",
+	},
+}
+
+// What stands after a field's, parameter's, or result's `|`: `SV_Position`, an #inout's name, or "".
+entity_semantic_label :: proc(e: ^Entity) -> string {
+	if e.semantic == .Inout {
+		return e.inout.name if e.inout != nil else ""
+	}
+	return semantic_name(e.semantic)
 }
 
 semantic_name :: proc(sem: Semantic) -> string {
@@ -139,10 +153,10 @@ semantic_from_string :: proc(name: string) -> Semantic {
 	if name == "" do return .None
 	infos := semantic_names
 	for info, sem_kind in infos {
-		if sem_kind == .None || sem_kind == .Custom do continue
+		if sem_kind == .None || sem_kind == .Inout do continue
 		if info.name == name do return sem_kind
 	}
-	return .Custom
+	return .Inout
 }
 
 
@@ -167,6 +181,7 @@ Entity_Flag :: enum {
 	Subtype,    // #subtype field — conversion without name inject
 	Ambient_Builtin, // @(builtin) in compiler-integrated core — harvested into core:builtin
 	Body_Checked,    // procedure/entry body typechecked under this instantiation
+	Semantic_Written, // a `| name` was written on this field, parameter, or result (resolved or not)
 }
 
 Entity_State :: enum {
@@ -283,6 +298,8 @@ Entity_Kind :: enum {
 	Nil,
 	Label,
 	Proc_Group,
+	Specialization_Constant,
+	Semantic, // `SV_*` (`#intrinsic("sv.*")`) or `#inout(T, N)`: stands only after `|`
 }
 
 // Folded `pipeline { ... }` data for host Raster_Desc conversion (no sidecar emit).
@@ -341,7 +358,8 @@ Entity :: struct {
 
 	value: Exact_Value, // for constants
 	semantic: Semantic,
-	semantic_name: string, // if semantic == .Custom
+	inout: ^Entity, // semantic == .Inout: the `#inout` constant (the root of any alias)
+	location: int, // stage IO location of a varying or of a bound field, parameter, or result
 
 	field_offset: int,
 
@@ -360,6 +378,8 @@ Entity :: struct {
 	imported_module: ^Module,
 	// kind == .Pipeline — folded fields for host conversion
 	checked_pipeline: ^Checked_Pipeline,
+	// kind == .Specialization_Constant
+	spec_const_id: u32,
 	// Polymorphic specializations keyed by Exact_Value (on the generic entity)
 	gen_procs: [dynamic]^Entity,
 	// kind == .Proc_Group — named concrete members
@@ -402,6 +422,8 @@ entity_kind_string :: proc(e: ^Entity) -> string {
 	case .Pipeline: return "pipeline"
 	case .Import: return "import"
 	case .Proc_Group: return "proc group"
+	case .Specialization_Constant: return "specialization constant"
+	case .Semantic: return "semantic"
 	}
 	return "invalid entity"
 }
@@ -592,6 +614,58 @@ check_config_expr :: proc(checker: ^Checker, call: ^Call_Expr, operand: ^Operand
 	operand.value = effective
 }
 
+// `#inout(T, N)`: a stage IO location, type T at location N.
+check_inout_expr :: proc(checker: ^Checker, call: ^Call_Expr, operand: ^Operand) {
+	operand.mode = .Invalid
+	operand.type = t_invalid
+	if len(call.args) != 2 {
+		check_err(checker, call.pos, "#inout expects a type and a location, got %d arguments", len(call.args))
+		return
+	}
+	type := check_type(checker, call.args[0])
+	if type == nil || type == t_invalid do return
+	if type_is_string_kind(type) || type_is_ray_query(type) || type_is_pointer(type) || type_is_multi_pointer(type) || type_is_slice(type) {
+		check_err(checker, call.args[0].pos, "'%s' cannot cross between stages", string_from_type(type))
+		return
+	}
+	loc := check_expr(checker, call.args[1])
+	if loc.mode == .Invalid do return
+	n, is_int := loc.value.(i128)
+	if loc.mode != .Constant || !is_int || !(type_is_integer(loc.type) || type_is_untyped(loc.type)) {
+		check_err(checker, call.args[1].pos, "#inout location must be a constant integer")
+		return
+	}
+	count := io_location_count(type)
+	if n < 0 || n + i128(count) > IO_LOCATIONS {
+		check_err(checker, call.args[1].pos, "#inout location %v is outside 0..%d ('%s' takes %d)", n, IO_LOCATIONS - 1, string_from_type(type), count)
+		return
+	}
+	operand.mode = .Semantic
+	operand.semantic = .Inout
+	operand.type = type
+	operand.value = n
+}
+
+// Stage IO locations: the cap a shader may use.
+IO_LOCATIONS :: 32
+
+// Locations a stage IO value takes: one per vector of up to 16 bytes, so a matrix takes one per column and an array one per element.
+io_location_count :: proc(type: ^Type) -> int {
+	#partial switch t in type.derived {
+	case ^Type_Vector:
+		return 2 if type_sizeof(type) > 16 else 1
+	case ^Type_Matrix:
+		return t.columns * (2 if t.rows * type_sizeof(t.elem) > 16 else 1)
+	case ^Type_Array:
+		return t.len * io_location_count(t.elem)
+	case ^Type_Struct:
+		n := 0
+		for f in t.fields.variables do n += io_location_count(f.type)
+		return n
+	}
+	return 1
+}
+
 check_intrinsic_expr :: proc(checker: ^Checker, call: ^Call_Expr, operand: ^Operand) {
 	operand.mode = .Invalid
 	operand.type = t_invalid
@@ -619,6 +693,16 @@ check_intrinsic_expr :: proc(checker: ^Checker, call: ^Call_Expr, operand: ^Oper
 		operand.mode = .Type
 		operand.type = t
 		return
+	}
+	// `sv.Position` is `SV_Position`.
+	if strings.has_prefix(key, "sv.") {
+		for info, sem in semantic_names {
+			if info.name != "" && info.name[len("SV_"):] == key[len("sv."):] {
+				operand.mode = .Semantic
+				operand.semantic = sem
+				return
+			}
+		}
 	}
 	if key == "compiler.mode" {
 		e := scope_lookup(checker.curr_scope, "Mode")
@@ -769,6 +853,7 @@ check_module_collect_and_resolve :: proc(c: ^Checker) {
 	check_no_proc_recursion(c)
 	check_graphics_device_store_effects(c)
 	check_stage_gates(c)
+	check_spec_const_ids(c)
 }
 
 harvest_ambient_builtins :: proc(c: ^Checker) {
@@ -1800,11 +1885,13 @@ Addressing_Mode :: enum {
 	Value, // rvalue
 	Variable, // addressable variable (lvalue)
 	Constant,
+	Spec_Constant,
 	Type,
 	Builtin, // built-in proc
 	Proc,
 	Shader,
 	Import, // imported module binding
+	Semantic, // `SV_*` or `#inout` constant; Operand.semantic
 
 	// These aren't yet used
 	Proc_Group, // overloaded proc
@@ -1818,6 +1905,7 @@ Operand :: struct {
 	mode: Addressing_Mode,
 	value: Exact_Value,
 	builtin_id: Builtin_Proc,
+	semantic: Semantic, // mode == .Semantic
 	is_call: bool,
 	checked_pipeline: ^Checked_Pipeline, // set by check_pipeline_lit
 	ref_syntax: bool, // argument written as `&x` (for #ref params / overload ranking)
@@ -2093,6 +2181,9 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			}
 		}
 		operand.mode = .Constant if lhs.mode == .Constant && rhs.mode == .Constant else .Value
+		if lhs.mode == .Spec_Constant || rhs.mode == .Spec_Constant {
+			operand.mode = .Value
+		}
 		operand.type = type_from_binary_op(lhs.type, v.op.kind, rhs.type)
 
 		if operand.type == t_invalid {
@@ -2234,6 +2325,9 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				operand.mode = .Constant
 				operand.value = e.value
 			}
+		case .Specialization_Constant:
+			operand.mode = .Spec_Constant
+			operand.type = e.type
 		case .Type_Name:
 			operand.mode = .Type
 		case .Variable:
@@ -2247,6 +2341,10 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 		case .Builtin:
 			operand.mode = .Builtin
 			operand.builtin_id = e.builtin_id
+		case .Semantic:
+			operand.mode = .Semantic
+			operand.semantic = e.semantic
+			operand.value = e.value
 		case .Import:
 			operand.mode = .Import
 			operand.type = t_invalid
@@ -2338,6 +2436,9 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			case .Constant:
 				operand.mode = .Constant
 				operand.value = found.value
+			case .Specialization_Constant:
+				operand.mode = .Spec_Constant
+				operand.type = found.type
 			case .Type_Name:
 				operand.mode = .Type
 			case .Procedure:
@@ -2352,6 +2453,10 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			case .Proc_Group:
 				operand.mode = .Proc_Group
 				operand.type = t_invalid
+			case .Semantic:
+				operand.mode = .Semantic
+				operand.semantic = found.semantic
+				operand.value = found.value
 			case:
 				check_err(checker, v.field.pos, "cannot select '%s' of kind %s", v.field.name, entity_kind_string(found))
 				operand.mode = .Invalid
@@ -2527,6 +2632,9 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				return
 			case "intrinsic":
 				check_intrinsic_expr(checker, v, &operand)
+				return
+			case "inout":
+				check_inout_expr(checker, v, &operand)
 				return
 			}
 		}
@@ -3032,7 +3140,7 @@ check_expr :: proc(c: ^Checker, expr: ^Expr, type_hint: ^Type = nil, allow_no_va
 		}
 	}
 	#partial switch operand.mode {
-	case .Value, .Variable, .Constant, .Proc, .Swizzle_Variable, .Swizzle_Value:
+	case .Value, .Variable, .Constant, .Spec_Constant, .Proc, .Swizzle_Variable, .Swizzle_Value:
 		if operand.type == nil {
 			// Soft-fail / incomplete buffers can produce typed modes without a type.
 			// Never slice module.code with possibly-inverted spans for the assert message.
@@ -3046,6 +3154,10 @@ check_expr :: proc(c: ^Checker, expr: ^Expr, type_hint: ^Type = nil, allow_no_va
 		operand.type = t_invalid
 	case .Type:
 		check_err(c, expr.pos, "exprected an expression, got type")
+		operand.mode = .Invalid
+		operand.type = t_invalid
+	case .Semantic:
+		check_err(c, expr.pos, "a semantic is not a value; it stands only after '|'")
 		operand.mode = .Invalid
 		operand.type = t_invalid
 	case .No_Value:
@@ -3156,6 +3268,10 @@ check_shared_decl_ok :: proc(c: ^Checker, decl: ^Value_Decl, type: ^Type) -> boo
 }
 
 check_value_decl :: proc(c: ^Checker, decl: ^Value_Decl) {
+	if value_decl_spec_attr_count(decl) > 0 {
+		check_err(c, decl.pos, "specialization constants are only allowed at file scope")
+		return
+	}
 	if decl.is_using {
 		check_err(c, decl.pos, "'using' on a declaration is not supported")
 		return
@@ -3308,7 +3424,7 @@ check_value_decl :: proc(c: ^Checker, decl: ^Value_Decl) {
 		case .Proc: entity_kind = .Procedure
 		case .Shader: entity_kind = .Entry
 		case .Type: entity_kind = .Type_Name
-		case .Variable, .Value, .Swizzle_Variable, .Swizzle_Value: entity_kind = .Variable
+		case .Variable, .Value, .Spec_Constant, .Swizzle_Variable, .Swizzle_Value: entity_kind = .Variable
 		case .Constant:
 			if type_is_pipeline(v.type) {
 				if decl.is_mutable {
@@ -3424,7 +3540,7 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 		seen_sem: Semantics
 		sem_infos := semantic_names
 		for param in type.params.variables {
-			if param.semantic == .None || param.semantic == .Custom do continue
+			if param.semantic == .None || param.semantic == .Inout do continue
 			if param.semantic in seen_sem {
 				check_err(c, param.pos, "duplicate semantic '%s' on procedure parameters", sem_infos[param.semantic].name)
 			}
@@ -3455,18 +3571,27 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 			#partial switch stage {
 			case .Vertex, .Fragment:
 				for param in type.params.variables {
-					if param.semantic == .None || param.semantic == .Custom {
+					if param.semantic == .None || param.semantic == .Inout {
 						check_nested_semantics(c, param.type, Allowed_Semantics_Struct_Fields)
 					}
 				}
 				if type.results != nil {
 					for result in type.results.variables {
 						check_nested_semantics(c, result.type, Allowed_Semantics_Shader_Results + Allowed_Semantics_Struct_Fields)
+						if result.semantic == .Depth {
+							if stage != .Fragment {
+								check_err(c, result.pos, "'SV_Depth' is only a fragment result")
+							} else if !type_eq(result.type, t_f32) {
+								check_err(c, result.pos, "'SV_Depth' must be 'f32', got '%s'", string_from_type(result.type))
+							}
+						}
 					}
 				}
+				check_stage_io(c, type, stage)
 			}
 		}
 	}
+	check_interp_tags(c, type)
 
 	if type.is_fmag {
 		if type.params != nil {
@@ -3492,6 +3617,161 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 	return type
 }
 
+// Where a vertex or fragment entry's semantics may stand, and the stage IO locations its varyings take.
+check_stage_io :: proc(c: ^Checker, type: ^Type_Proc, stage: Stage) {
+	Io :: struct {
+		e: ^Entity,
+		location, count: int,
+		owner: ^Type_Struct, // a field's struct: its own overlaps are reported by assign_struct_io_locations
+	}
+	ins := make([dynamic]Io, context.temp_allocator)
+	outs := make([dynamic]Io, context.temp_allocator)
+
+	for param in type.params.variables {
+		st, is_struct := param.type.derived.(^Type_Struct)
+		#partial switch param.semantic {
+		case .None:
+			if !is_struct {
+				if .Semantic_Written not_in param.flags {
+					check_err(c, param.pos, "stage parameter '%s' needs a semantic (an SV_* name or an #inout)", param.name)
+				}
+				continue
+			}
+			assign_struct_io_locations(c, st)
+			for f in st.fields.variables {
+				if f.semantic == .None || f.semantic == .Inout {
+					append(&ins, Io{f, f.location, io_location_count(f.type), st})
+				}
+			}
+		case .Inout:
+			if stage == .Vertex {
+				check_err(c, param.pos, "#inout on a vertex parameter would be a vertex attribute; vertex data comes through SV_Data")
+				continue
+			}
+			param.location = io_inout_location(param)
+			append(&ins, Io{param, param.location, io_location_count(param.type), nil})
+		case .Position:
+			if stage == .Vertex {
+				check_err(c, param.pos, "'SV_Position' is a vertex output, not an input")
+			}
+		}
+	}
+	if type.results != nil {
+		for result in type.results.variables {
+			st, is_struct := result.type.derived.(^Type_Struct)
+			#partial switch result.semantic {
+			case .None:
+				if !is_struct {
+					if .Semantic_Written not_in result.flags {
+						check_err(c, result.pos, "stage result '%s' needs a semantic (an SV_* name or an #inout)", result.name)
+					}
+					continue
+				}
+				if stage == .Fragment {
+					for f in st.fields.variables {
+						if f.semantic == .Inout {
+							check_err(c, f.pos, "#inout on a fragment output: targets are SV_Target")
+						}
+					}
+					continue
+				}
+				assign_struct_io_locations(c, st)
+				for f in st.fields.variables {
+					if f.semantic == .None || f.semantic == .Inout {
+						append(&outs, Io{f, f.location, io_location_count(f.type), st})
+					}
+				}
+			case .Inout:
+				if stage == .Fragment {
+					check_err(c, result.pos, "#inout on a fragment output: targets are SV_Target")
+					continue
+				}
+				result.location = io_inout_location(result)
+				append(&outs, Io{result, result.location, io_location_count(result.type), nil})
+			}
+		}
+	}
+
+	// Two values of one entry's inputs, or of its outputs, never share a location.
+	for list in ([2][]Io{ins[:], outs[:]}) {
+		for a, i in list {
+			for b in list[i + 1:] {
+				if a.owner != nil && a.owner == b.owner do continue
+				if a.location < b.location + b.count && b.location < a.location + a.count {
+					check_err(c, b.e.pos, "'%s' and '%s' both use location %d", a.e.name, b.e.name, max(a.location, b.location))
+				}
+			}
+		}
+	}
+}
+
+io_inout_location :: proc(e: ^Entity) -> int {
+	if e.inout == nil do return 0
+	n, _ := e.inout.value.(i128)
+	return int(n)
+}
+
+// A struct's stage IO locations, the same in every entry that uses it. A bound field takes its #inout's location;
+// a positional field the next free one, stepping over the locations the struct's bound fields take.
+assign_struct_io_locations :: proc(c: ^Checker, st: ^Type_Struct) {
+	if st.io_locations do return
+	st.io_locations = true
+	taken: [IO_LOCATIONS]bool
+	for f in st.fields.variables {
+		if inner, is_struct := f.type.derived.(^Type_Struct); is_struct && struct_has_inout(inner) {
+			check_err(c, f.pos, "an #inout cannot stand inside a nested struct ('%s')", f.name)
+		}
+		if f.semantic != .Inout do continue
+		f.location = io_inout_location(f)
+		n := io_location_count(f.type)
+		for l in f.location ..< min(f.location + n, IO_LOCATIONS) {
+			if taken[l] {
+				check_err(c, f.pos, "'%s' overlaps another #inout of this struct at location %d", f.name, l)
+				break
+			}
+			taken[l] = true
+		}
+	}
+	next := 0
+	for f in st.fields.variables {
+		if f.semantic != .None do continue
+		n := io_location_count(f.type)
+		for next + n <= IO_LOCATIONS && slice.contains(taken[next:next + n], true) {
+			next += 1
+		}
+		if next + n > IO_LOCATIONS {
+			check_err(c, f.pos, "'%s' does not fit in %d stage IO locations", f.name, IO_LOCATIONS)
+			return
+		}
+		f.location = next
+		for l in next ..< next + n do taken[l] = true
+		next += n
+	}
+}
+
+struct_has_inout :: proc(st: ^Type_Struct) -> bool {
+	for f in st.fields.variables {
+		if f.semantic == .Inout do return true
+		if inner, is_struct := f.type.derived.(^Type_Struct); is_struct && struct_has_inout(inner) do return true
+	}
+	return false
+}
+
+// `#flat`, `#noperspective`, and `#centroid` on a signature stand only on a bound fragment input or vertex output.
+check_interp_tags :: proc(c: ^Checker, type: ^Type_Proc) {
+	stage, has_stage := type.stage.?
+	varying_stage := [2]Stage{.Fragment, .Vertex} // inputs, outputs
+	for list, i in ([2]^Type_Tuple{type.params, type.results}) {
+		if list == nil do continue
+		for e in list.variables {
+			if e.flags & pipeline_interp_flags == {} do continue
+			if !has_stage || e.semantic != .Inout || stage != varying_stage[i] {
+				check_err(c, e.pos, "interpolation tags stand only on a varying: an #inout fragment parameter or vertex result")
+			}
+		}
+	}
+}
+
 fmag_value_type_ok :: proc(type: ^Type) -> bool {
 	if type == nil do return false
 	if type_eq(type, t_f32) do return true
@@ -3507,7 +3787,7 @@ check_nested_semantics :: proc(c: ^Checker, type: ^Type, allowed: Semantics) {
 	if !ok do return
 	sem_infos := semantic_names
 	for f in st.fields.variables {
-		if f.semantic != .None && f.semantic != .Custom && f.semantic not_in allowed {
+		if f.semantic != .None && f.semantic != .Inout && f.semantic not_in allowed {
 			check_err(c, f.pos, "semantic '%s' not allowed in this context", sem_infos[f.semantic].name)
 		}
 		check_nested_semantics(c, f.type, allowed)
@@ -3526,6 +3806,29 @@ check_compute_semantic_type :: proc(c: ^Checker, param: ^Entity) {
 		if !type_eq(param.type, t_u32) {
 			check_err(c, param.pos, "'%s' parameter must be 'u32', got '%s'", sem_infos[param.semantic].name, string_from_type(param.type))
 		}
+	}
+}
+
+// The semantic after a field's `|`: an `SV_*` or `#inout` constant this context allows.
+check_field_semantic :: proc(c: ^Checker, field: ^Field, var: ^Entity, allowed: Semantics) {
+	var.flags += {.Semantic_Written}
+	sem := check_expr_internal(c, field.semantics)
+	if sem.mode == .Invalid do return
+	if sem.mode != .Semantic {
+		check_err(c, field.semantics.pos, "expected a semantic after '|' (an SV_* name or an #inout constant)")
+		return
+	}
+	if sem.semantic not_in allowed {
+		check_err(c, field.semantics.pos, "semantic name not allowed in this context")
+		return
+	}
+	var.semantic = sem.semantic
+	if sem.semantic != .Inout do return
+	root := entity_from_expr(field.semantics)
+	if root != nil && root.aliased_of != nil do root = root.aliased_of
+	var.inout = root
+	if root != nil && root.type != nil && !type_eq(var.type, root.type) {
+		check_err(c, field.semantics.pos, "'%s' is '%s' but its #inout is '%s'", var.name, string_from_type(var.type), string_from_type(root.type))
 	}
 }
 
@@ -3557,15 +3860,7 @@ check_field_list :: proc(c: ^Checker, scope: ^Scope, list: ^Field_List, allowed_
 				var.flags += {.Param, .Immutable}
 			}
 			if field.semantics != nil {
-				for info, i in semantic_names {
-					if field.semantics.name == info.name {
-						if i in allowed_semantics {
-							var.semantic = i
-						} else {
-							check_err(c, field.semantics.pos, "semantic name not allowed in this context")
-						}
-					}
-				}
+				check_field_semantic(c, field, var, allowed_semantics)
 			}
 			append(&tuple.variables, var)
 			param_i += 1
@@ -3656,17 +3951,13 @@ check_field_list :: proc(c: ^Checker, scope: ^Scope, list: ^Field_List, allowed_
 			apply_using_flags_to_field(c, field, var, allow_using)
 			scope_insert(scope, var)
 			if field.semantics != nil {
-				if len(field.names) > 1 {
-					check_err(c, field.semantics.pos, "semantic names are not allowed on multi-name fields")
-				} else {
-					for info, i in semantic_names {
-						if field.semantics.name == info.name {
-							if i in allowed_semantics {
-								var.semantic = i
-							} else {
-								check_err(c, field.semantics.pos, "semantic name not allowed in this context")
-							}
-						}
+				check_field_semantic(c, field, var, allowed_semantics)
+				// Each name of `a, b: [4]f32 | SV_Target` is its own target; any other semantic is one value.
+				if len(field.names) > 1 && var.semantic != .Target && var.semantic != .None && name == field.names[0] {
+					if var.semantic == .Inout {
+						check_err(c, field.semantics.pos, "an #inout is one location; give each name its own")
+					} else {
+						check_err(c, field.semantics.pos, "only SV_Target may be shared by several names")
 					}
 				}
 			}
@@ -4311,64 +4602,73 @@ pipeline_extract_target :: proc(c: ^Checker, elem: ^Expr) -> (target: Checked_Pi
 	return target, ok
 }
 
-check_pipeline_varying_fields :: proc(c: ^Checker, pos: Token_Pos, vs_st, fs_st: ^Type_Struct) {
-	if vs_st == nil || fs_st == nil do return
-	vs_fields: []^Entity
-	fs_fields: []^Entity
-	if vs_st.fields != nil do vs_fields = vs_st.fields.variables[:]
-	if fs_st.fields != nil do fs_fields = fs_st.fields.variables[:]
-	for fs_f in fs_fields {
-		vs_f: ^Entity
-		for v in vs_fields {
-			if v.name == fs_f.name {
-				vs_f = v
-				break
-			}
-		}
-		if vs_f == nil {
-			check_err(c, pos, "pipeline VS/FS interface mismatch: fragment field '%s' missing on vertex result", fs_f.name)
-			continue
-		}
-		if vs_f.type != fs_f.type && !type_eq(vs_f.type, fs_f.type) {
-			check_err(c, pos, "pipeline VS/FS interface mismatch: field '%s' type differs (vertex '%s' vs fragment '%s')",
-				fs_f.name, string_from_type(vs_f.type), string_from_type(fs_f.type))
-		}
-		if (vs_f.flags & pipeline_interp_flags) != (fs_f.flags & pipeline_interp_flags) {
-			check_err(c, pos, "pipeline VS/FS interface mismatch: field '%s' interpolation differs (#flat/#noperspective/#centroid)", fs_f.name)
-		}
-	}
-}
-
 check_pipeline_vs_fs_interface :: proc(c: ^Checker, pos: Token_Pos, vertex_e, fragment_e: ^Entity) {
 	if vertex_e == nil || fragment_e == nil || vertex_e.type == nil || fragment_e.type == nil do return
 	vs_t, vs_ok := vertex_e.type.derived.(^Type_Proc)
 	fs_t, fs_ok := fragment_e.type.derived.(^Type_Proc)
 	if !vs_ok || !fs_ok do return
 
-	vs_out: ^Type
-	if vs_t.results != nil && len(vs_t.results.variables) > 0 {
-		vs_out = vs_t.results.variables[0].type
-	}
-	vs_st: ^Type_Struct
-	if vs_out != nil {
-		vs_st, _ = vs_out.derived.(^Type_Struct)
+	// The vertex's outputs: its result struct's fields and its bound results.
+	vs_struct: ^Type
+	vs_outs := make([dynamic]^Entity, context.temp_allocator)
+	if vs_t.results != nil {
+		for r in vs_t.results.variables {
+			if st, is_struct := r.type.derived.(^Type_Struct); is_struct && r.semantic == .None {
+				vs_struct = r.type
+				append(&vs_outs, ..st.fields.variables[:])
+			} else if r.semantic == .Inout {
+				append(&vs_outs, r)
+			}
+		}
 	}
 
 	if fs_t.params == nil do return
 	for param in fs_t.params.variables {
-		if param.semantic != .None && param.semantic != .Custom do continue
-		fs_st, is_struct := param.type.derived.(^Type_Struct)
-		if !is_struct do continue
-
-		if vs_st == nil {
-			check_err(c, pos, "pipeline VS/FS interface mismatch: fragment input struct does not match vertex result")
-			continue
+		#partial switch param.semantic {
+		case .Inout:
+			check_pipeline_bound_input(c, pos, param, vs_outs[:])
+		case .None:
+			st, is_struct := param.type.derived.(^Type_Struct)
+			if !is_struct || param.type == vs_struct do continue
+			for f in st.fields.variables {
+				#partial switch f.semantic {
+				case .None:
+					check_err(c, pos, "pipeline VS/FS interface mismatch: positional field '%s' matches only in the vertex's own struct; bind it with an #inout", f.name)
+				case .Inout:
+					check_pipeline_bound_input(c, pos, f, vs_outs[:])
+				}
+			}
 		}
-		if param.type != vs_out {
-			check_err(c, pos, "pipeline VS/FS interface mismatch: fragment input struct does not match vertex result")
-		}
-		check_pipeline_varying_fields(c, pos, vs_st, fs_st)
 	}
+}
+
+// A bound fragment input matches the vertex output bound to the same #inout declaration, with the same interpolation.
+check_pipeline_bound_input :: proc(c: ^Checker, pos: Token_Pos, input: ^Entity, vs_outs: []^Entity) {
+	for out in vs_outs {
+		if out.semantic != .Inout || !same_inout(out.inout, input.inout) do continue
+		if io_interp_flags(out) != io_interp_flags(input) {
+			check_err(c, pos, "pipeline VS/FS interface mismatch: '%s' interpolation differs (#flat/#noperspective/#centroid)", input.name)
+		}
+		return
+	}
+	name := input.inout.name if input.inout != nil else "?"
+	check_err(c, pos, "pipeline VS/FS interface mismatch: fragment input '%s' (%s) is not written by the vertex", input.name, name)
+}
+
+// Two uses are the same #inout when they name one declaration: each import checks its file again, so the entities differ.
+same_inout :: proc(a, b: ^Entity) -> bool {
+	if a == nil || b == nil do return false
+	if a == b do return true
+	return a.decl != nil && a.decl == b.decl && a.decl_value_index == b.decl_value_index
+}
+
+// Integer, enum, bit_set, and boolean varyings are flat whether or not they say so.
+io_interp_flags :: proc(e: ^Entity) -> Entity_Flags {
+	flags := e.flags & pipeline_interp_flags
+	if type_is_integer(e.type) || type_is_enum(e.type) || type_is_bit_set(e.type) || type_is_boolean(e.type) {
+		flags += {.Flat}
+	}
+	return flags
 }
 
 count_fragment_sv_targets :: proc(fragment_e: ^Entity) -> int {

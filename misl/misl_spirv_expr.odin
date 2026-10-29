@@ -79,6 +79,87 @@ spv_rvalue :: proc(cg: ^Spv_CG, expr: ^Expr) -> spv.Id {
 	}
 }
 
+spv_cond_expr :: proc(cg: ^Spv_CG, expr: ^Expr) -> spv.Id {
+	if e := expr_spec_const(expr); e != nil && type_eq(e.type, t_b32) {
+		return spv_emit_spec_const(cg, e)
+	}
+	return spv_as_bool(cg, spv_rvalue(cg, expr), expr.tav.type)
+}
+
+expr_spec_const :: proc(expr: ^Expr) -> ^Entity {
+	e := entity_from_expr(expr)
+	if e != nil && e.kind == .Specialization_Constant {
+		return e
+	}
+	return nil
+}
+
+spv_emit_spec_const :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
+	if e == nil do return spv.NONE
+	if id, ok := cg.spec_ids[e]; ok {
+		return id
+	}
+	id: spv.Id
+	if type_eq(e.type, t_b32) {
+		on := false
+		if v, is_bool := e.value.(bool); is_bool {
+			on = v
+		}
+		id = spv.spec_const_true(&cg.m) if on else spv.spec_const_false(&cg.m)
+	} else if type_eq(e.type, t_f32) {
+		f: f32 = 0
+		if v, is_f := e.value.(f64); is_f {
+			f = f32(v)
+		}
+		id = spv.spec_const_f32(&cg.m, f)
+	} else {
+		n := exact_value_to_i128(e.value)
+		bits := u64(u32(n))
+		ty := spv.type_u32(&cg.m)
+		if type_eq(e.type, t_i32) {
+			ty = spv.type_i32(&cg.m)
+			bits = u64(u32(i32(n)))
+		}
+		id = spv.spec_const_int(&cg.m, ty, bits, 32)
+	}
+	spv.decorate(&cg.m, id, .SpecId, e.spec_const_id)
+	spv.name(&cg.m, id, e.name)
+	cg.spec_ids[e] = id
+	return id
+}
+
+spv_spec_value :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
+	id := spv_emit_spec_const(cg, e)
+	if type_eq(e.type, t_b32) {
+		return spv_from_bool(cg, id, t_b32)
+	}
+	return id
+}
+
+spv_spec_u32_fixed :: proc(cg: ^Spv_CG, v: u32) -> spv.Id {
+	return spv.spec_const_int(&cg.m, spv.type_u32(&cg.m), u64(v), 32)
+}
+
+compute_local_size_is_spec :: proc(pt: ^Type_Proc) -> bool {
+	if pt == nil do return false
+	for s in pt.local_size_spec {
+		if s != nil do return true
+	}
+	return false
+}
+
+spv_local_size_ids :: proc(cg: ^Spv_CG, pt: ^Type_Proc) -> (x, y, z: spv.Id) {
+	ids: [3]spv.Id
+	for i in 0 ..< 3 {
+		if pt.local_size_spec[i] != nil {
+			ids[i] = spv_emit_spec_const(cg, pt.local_size_spec[i])
+		} else {
+			ids[i] = spv_spec_u32_fixed(cg, pt.local_size[i])
+		}
+	}
+	return ids[0], ids[1], ids[2]
+}
+
 spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 	e := v.entity
 	if e == nil {
@@ -103,6 +184,9 @@ spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 		}
 		return cur
 	}
+	if e.kind == .Specialization_Constant {
+		return spv_spec_value(cg, e)
+	}
 	if e.kind == .Constant && type_is_string_kind(e.type) {
 		return spv.const_u32(&cg.m, 0)
 	}
@@ -115,7 +199,9 @@ spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 	if e.kind == .Constant && e.value != nil && !type_is_array(e.type) && !type_is_string_kind(e.type) {
 		return spv_const_value(cg, e.type, e.value)
 	}
-	if ptr, ok := cg.entity_ptr[e]; ok {
+	info := cg.entities[e]
+	if info.ptr != spv.NONE {
+		ptr := info.ptr
 		load_t := e.type
 		if e.semantic == .Indirect_Data {
 			if elem := type_pointer_elem(e.type); elem != nil {
@@ -124,8 +210,8 @@ spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 		}
 		sc := spv_entity_sc(cg, e)
 		layout: Spv_Layout = .Stored if sc == .PhysicalStorageBuffer else .Func
-		val_ty, has_ty := cg.entity_val_ty[e]
-		if !has_ty {
+		val_ty := info.val_ty
+		if val_ty == spv.NONE {
 			val_ty = spv_type(cg, load_t, layout)
 		}
 		if sc == .PhysicalStorageBuffer {
@@ -270,7 +356,8 @@ spv_lval :: proc(cg: ^Spv_CG, expr: ^Expr) -> Spv_Lval {
 		if e.kind == .Constant && type_is_array(e.type) {
 			spv_ensure_array_const(cg, e)
 		}
-		if ptr, ok := cg.entity_ptr[e]; ok {
+		info := cg.entities[e]
+		if info.ptr != spv.NONE {
 			lt := e.type
 			if e.semantic == .Indirect_Data {
 				if elem := type_pointer_elem(e.type); elem != nil {
@@ -280,12 +367,12 @@ spv_lval :: proc(cg: ^Spv_CG, expr: ^Expr) -> Spv_Lval {
 			sc := spv_entity_sc(cg, e)
 			aligned := sc == .PhysicalStorageBuffer
 			return Spv_Lval{
-				ptr = ptr,
+				ptr = info.ptr,
 				type = lt,
 				sc = sc,
 				aligned = aligned,
 				align = spv_align_of(lt) if aligned else 0,
-				direct = sc == .Function && !cg.entity_alias[e],
+				direct = sc == .Function && !info.alias,
 			}
 		}
 		spv_err(cg, v.pos, "codegen_spirv: '%s' is not an lvalue", e.name)
@@ -597,7 +684,7 @@ spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 	// Short-circuit with selection.
 	res_t := default_type(v.tav.type)
 	tmp := spv_fn_var(cg, res_t, "_land")
-	lb := spv_as_bool(cg, spv_rvalue(cg, v.left), v.left.tav.type)
+	lb := spv_cond_expr(cg, v.left)
 	then_b := spv.block_new(&cg.m)
 	else_b := spv.block_new(&cg.m)
 	merge := spv.block_new(&cg.m)
@@ -605,7 +692,7 @@ spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 	if v.op.kind == .Cmp_And {
 		spv.branch_cond(&cg.m, lb, then_b, else_b)
 		spv_block(cg, then_b)
-		rb := spv_as_bool(cg, spv_rvalue(cg, v.right), v.right.tav.type)
+		rb := spv_cond_expr(cg, v.right)
 		spv.store(&cg.m, tmp, spv_from_bool(cg, rb, res_t))
 		spv.branch_if_open(&cg.m, merge)
 		spv_block(cg, else_b)
@@ -617,7 +704,7 @@ spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, true), res_t))
 		spv.branch_if_open(&cg.m, merge)
 		spv_block(cg, else_b)
-		rb := spv_as_bool(cg, spv_rvalue(cg, v.right), v.right.tav.type)
+		rb := spv_cond_expr(cg, v.right)
 		spv.store(&cg.m, tmp, spv_from_bool(cg, rb, res_t))
 		spv.branch_if_open(&cg.m, merge)
 	}
@@ -790,7 +877,7 @@ spv_call_rvalue :: proc(cg: ^Spv_CG, v: ^Call_Expr) -> spv.Id {
 		spv_err(cg, v.pos, "codegen_spirv: call has no callee")
 		return spv_zero(cg, v.tav.type)
 	}
-	fn_id, fok := cg.fn_id[fn_e]
+	fn_id, fok := spv_entity_fn(cg, fn_e)
 	if !fok {
 		spv_err(cg, v.pos, "codegen_spirv: callee '%s' was not emitted", fn_e.name)
 		return spv_zero(cg, v.tav.type)
@@ -1149,16 +1236,10 @@ spv_modf_frexp_value :: proc(cg: ^Spv_CG, call: ^Call_Expr, id: Builtin_Proc) ->
 spv_modf_frexp_into :: proc(cg: ^Spv_CG, dests: []^Entity, call: ^Call_Expr, id: Builtin_Proc) {
 	last, first, first_t := spv_modf_frexp_parts(cg, call, id)
 	if len(dests) > 0 && spv_live_dest(dests[0]) {
-		if _, ok := cg.entity_ptr[dests[0]]; !ok {
-			cg.entity_ptr[dests[0]] = spv_fn_var(cg, dests[0].type, dests[0].name)
-		}
-		spv.store(&cg.m, cg.entity_ptr[dests[0]], spv_convert(cg, first, first_t, dests[0].type))
+		spv.store(&cg.m, spv_entity_local(cg, dests[0]), spv_convert(cg, first, first_t, dests[0].type))
 	}
 	if len(dests) > 1 && spv_live_dest(dests[1]) {
-		if _, ok := cg.entity_ptr[dests[1]]; !ok {
-			cg.entity_ptr[dests[1]] = spv_fn_var(cg, dests[1].type, dests[1].name)
-		}
-		spv.store(&cg.m, cg.entity_ptr[dests[1]], last)
+		spv.store(&cg.m, spv_entity_local(cg, dests[1]), last)
 	} else if len(dests) == 1 && spv_live_dest(dests[0]) {
 		_ = last
 	}

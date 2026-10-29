@@ -37,7 +37,7 @@ hover_at :: proc(ws: ^Workspace, params: lsp.Hover_Params) -> Maybe(lsp.Hover) {
 
 hover_semantic_markdown :: proc(name: string) -> (string, bool) {
 	sem := misl.semantic_from_string(name)
-	if sem == .None || sem == .Custom do return "", false
+	if sem == .None || sem == .Inout do return "", false
 	infos := misl.semantic_names
 	info := infos[sem]
 	if info.name == "" do return "", false
@@ -118,6 +118,11 @@ hover_symbol_info :: proc(ident: ^misl.Ident) -> string {
 
 		case .Pipeline:
 			return fmt.tprintf("%s :: pipeline", name)
+
+		case .Semantic:
+			if e.semantic != .Inout do return name
+			n, _ := e.value.(i128)
+			return fmt.tprintf("%s :: #inout(%s, %v)", name, misl.string_from_type(e.type), n)
 
 		case .Proc_Group:
 			b: strings.Builder
@@ -204,10 +209,8 @@ write_struct_definition :: proc(b: ^strings.Builder, st: ^misl.Type_Struct) {
 			strings.write_byte(b, ' ')
 		}
 		strings.write_string(b, misl.string_from_type(f.type))
-		if f.semantic != .None && f.semantic != .Custom {
-			fmt.sbprintf(b, " | %s", sem_names[f.semantic].name)
-		} else if f.semantic == .Custom && f.semantic_name != "" {
-			fmt.sbprintf(b, " | %s", f.semantic_name)
+		if label := misl.entity_semantic_label(f); label != "" {
+			fmt.sbprintf(b, " | %s", label)
 		}
 		strings.write_string(b, ",\n")
 	}
@@ -270,7 +273,6 @@ hover_proc_signature :: proc(type: ^misl.Type) -> string {
 	pt, ok := proc_type_for_display(type)
 	if !ok do return "proc"
 
-	sem_names := misl.semantic_names
 	b: strings.Builder
 	strings.builder_init(&b, context.temp_allocator)
 	strings.write_string(&b, "proc")
@@ -293,8 +295,8 @@ hover_proc_signature :: proc(type: ^misl.Type) -> string {
 			if f != nil {
 				if f.name != "" {
 					fmt.sbprintf(&b, "(%s: %s", f.name, misl.string_from_type(f.type))
-					if f.semantic != .None && f.semantic != .Custom {
-						fmt.sbprintf(&b, " | %s", sem_names[f.semantic].name)
+					if label := misl.entity_semantic_label(f); label != "" {
+						fmt.sbprintf(&b, " | %s", label)
 					}
 					strings.write_byte(&b, ')')
 				} else {
@@ -307,8 +309,8 @@ hover_proc_signature :: proc(type: ^misl.Type) -> string {
 				if f == nil do continue
 				if i > 0 do strings.write_string(&b, ", ")
 				fmt.sbprintf(&b, "%s: %s", f.name, misl.string_from_type(f.type))
-				if f.semantic != .None && f.semantic != .Custom {
-					fmt.sbprintf(&b, " | %s", sem_names[f.semantic].name)
+				if label := misl.entity_semantic_label(f); label != "" {
+					fmt.sbprintf(&b, " | %s", label)
 				}
 			}
 			strings.write_byte(&b, ')')
@@ -339,11 +341,8 @@ write_hover_proc_param :: proc(b: ^strings.Builder, f: ^misl.Entity) {
 	if f == nil do return
 	write_entity_hash_prefixes(b, f)
 	fmt.sbprintf(b, "%s: %s", hover_param_name(f), misl.string_from_type(f.type))
-	if f.semantic != .None && f.semantic != .Custom {
-		sem_names := misl.semantic_names
-		fmt.sbprintf(b, " | %s", sem_names[f.semantic].name)
-	} else if f.semantic == .Custom && f.semantic_name != "" {
-		fmt.sbprintf(b, " | %s", f.semantic_name)
+	if label := misl.entity_semantic_label(f); label != "" {
+		fmt.sbprintf(b, " | %s", label)
 	}
 }
 

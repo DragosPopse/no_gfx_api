@@ -2437,6 +2437,45 @@ def run_tests(exe: Path) -> int:
         items = complete(c, prefix_uri, {"line": line, "character": col}, None)
         suite.expect_labels("prefix SV filters", items, {"SV_Position", "SV_Target"})
 
+        # ========== #inout (stage IO by name) ==========
+        print("\n== #inout ==")
+        io_src = (
+            "package main\n"
+            "NORMAL :: #inout([3]f32, 0)\n"
+            "Out :: struct {\n"
+            "\tpos: [4]f32 | SV_Position,\n"
+            "\tnormal: [3]f32 | NORMAL,\n"
+            "}\n"
+            'vs :: proc "vertex"(vid: u32 |) -> (out: Out) {\n'
+            "\treturn out\n"
+            "}\n"
+            'fs :: proc "fragment"(n: [3]f32 |) -> (out: [4]f32 | SV_Target) {\n'
+            "\treturn out\n"
+            "}\n"
+        )
+        io_uri = path_uri(REPO / "tmp_inout.misl")
+        open_doc(c, io_uri, io_src, 1)
+        time.sleep(0.08)
+        items = complete(c, io_uri, pos_at(io_src, "n: [3]f32 |"), "|")
+        suite.expect_labels("fragment param | lists #inout", items, {"NORMAL", "SV_Position"})
+        items = complete(c, io_uri, pos_at(io_src, "vid: u32 |"), "|")
+        suite.check("vertex param | excludes #inout", "NORMAL" not in labels(items), f"labs={sorted(labels(items))}")
+        io_src = io_src.replace("vid: u32 |", "vid: u32 | SV_Vertex").replace("n: [3]f32 |", "n: [3]f32 | NORMAL")
+        change_doc(c, io_uri, io_src, 2)
+        time.sleep(0.08)
+        io_hover = c.request("textDocument/hover", {"textDocument": {"uri": io_uri}, "position": pos_at(io_src, "| NORM", after=True)})
+        io_hover_val = ((io_hover or {}).get("contents") or {}).get("value") or ""
+        suite.check("hover #inout use shows type and location", "#inout([3]f32, 0)" in io_hover_val, f"hover={io_hover_val!r}")
+        sv_hover = c.request("textDocument/hover", {"textDocument": {"uri": io_uri}, "position": pos_at(io_src, "| SV_Pos", after=True)})
+        sv_hover_val = ((sv_hover or {}).get("contents") or {}).get("value") or ""
+        suite.check("hover SV_Position shows its docs", "gl_Position" in sv_hover_val, f"hover={sv_hover_val!r}")
+        field_hover = c.request("textDocument/hover", {"textDocument": {"uri": io_uri}, "position": pos_at(io_src, "Out ::", after=False)})
+        field_hover_val = ((field_hover or {}).get("contents") or {}).get("value") or ""
+        suite.check("hover struct shows | NORMAL", "| NORMAL" in field_hover_val, f"hover={field_hover_val!r}")
+        io_def = c.request("textDocument/definition", {"textDocument": {"uri": io_uri}, "position": pos_at(io_src, "| NORM", after=True)})
+        def_line = (io_def[0].get("range", {}).get("start", {}).get("line") if isinstance(io_def, list) and io_def else None)
+        suite.check("definition of #inout use", def_line == 1, f"locs={io_def}")
+
     finally:
         try:
             c.close()

@@ -663,7 +663,7 @@ completion_at :: proc(ws: ^Workspace, params: lsp.Completion_Params, allocator :
 
 	// Directive completions after # (`#align`, `#config`, … — not `#+`).
 	if (has_trigger && trigger == "#") || ends_with_hash(doc.text, params.position) {
-		tags := []string{"align", "soa", "raw_union", "packed", "no_nil", "shared", "ref", "mut", "flat", "array", "config", "intrinsic"}
+		tags := []string{"align", "soa", "raw_union", "packed", "no_nil", "shared", "ref", "mut", "flat", "array", "config", "intrinsic", "inout"}
 		for tag in tags {
 			append(&items, lsp.Completion_Item{label = tag, kind = .Keyword})
 		}
@@ -673,7 +673,7 @@ completion_at :: proc(ws: ^Workspace, params: lsp.Completion_Params, allocator :
 	// Semantic (`| SV_…`) completions on struct fields / entry params & results.
 	if pipe, prefix, pipe_ok := find_semantic_pipe(doc.text, offset); pipe_ok {
 		if allowed, sem_ok := allowed_semantics_at(mod, doc.text, pipe); sem_ok {
-			append_semantic_completions(&items, allowed, prefix)
+			append_semantic_completions(&items, mod, allowed, prefix)
 			return {isIncomplete = false, items = items[:]}
 		}
 		// Bare `|` trigger outside a semantic slot — don't flood with idents.
@@ -1399,10 +1399,22 @@ is_ident_byte :: proc(c: u8) -> bool {
 		(c >= '0' && c <= '9')
 }
 
-append_semantic_completions :: proc(items: ^[dynamic]lsp.Completion_Item, allowed: misl.Semantics, prefix: string) {
+append_semantic_completions :: proc(items: ^[dynamic]lsp.Completion_Item, mod: ^misl.Module, allowed: misl.Semantics, prefix: string) {
+	// The file's own `#inout` constants; an imported one completes after `io.`.
+	if .Inout in allowed && mod != nil && mod.scope != nil {
+		for name, e in mod.scope.entities {
+			if e == nil || e.kind != .Semantic || e.semantic != .Inout do continue
+			if prefix != "" && !starts_with(name, prefix) do continue
+			n, _ := e.value.(i128)
+			sig := fmt.tprintf("%s :: #inout(%s, %v)", name, misl.string_from_type(e.type), n)
+			item := lsp.Completion_Item{label = name, kind = .Constant}
+			item.documentation = lsp.Markup_Content{kind = "markdown", value = markdown_fence_with_docs(sig, "")}
+			append(items, item)
+		}
+	}
 	infos := misl.semantic_names
 	for info, kind in infos {
-		if kind == .None || kind == .Custom do continue
+		if kind == .None || kind == .Inout do continue
 		if kind not_in allowed do continue
 		if info.name == "" do continue
 		if prefix != "" && !starts_with(info.name, prefix) do continue
@@ -1442,14 +1454,18 @@ allowed_semantics_for_slot :: proc(slot: Semantic_Slot, stage: misl.Stage, has_s
 		switch stage {
 		case .Compute:
 			return misl.Allowed_Semantics_Compute_Params, true
-		case .Vertex, .Fragment:
+		case .Vertex:
+			return misl.Allowed_Semantics_Shader_Params - {.Position, .Inout}, true // SV_Position and #inout are vertex outputs
+		case .Fragment:
 			return misl.Allowed_Semantics_Shader_Params, true
 		}
 	case .Proc_Result:
 		if !has_stage do return {}, true
 		switch stage {
-		case .Vertex, .Fragment:
+		case .Vertex:
 			return misl.Allowed_Semantics_Shader_Results, true
+		case .Fragment:
+			return misl.Allowed_Semantics_Shader_Results - {.Inout}, true // targets are SV_Target
 		case .Compute:
 			return {}, true
 		}
@@ -1475,7 +1491,7 @@ field_list_contains_offset :: proc(fl: ^misl.Field_List, offset: int) -> bool {
 		flo := f.pos.offset
 		fhi := f.end.offset if f.end.offset > flo else flo + 1
 		if f.semantics != nil {
-			fhi = max(fhi, f.semantics.end.offset if f.semantics.end.offset > 0 else f.semantics.pos.offset + len(f.semantics.name))
+			fhi = max(fhi, f.semantics.end.offset if f.semantics.end.offset > 0 else f.semantics.pos.offset + 1)
 		}
 		if offset >= flo && offset <= fhi + 1 {
 			return true

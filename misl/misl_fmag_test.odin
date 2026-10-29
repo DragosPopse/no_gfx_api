@@ -1,6 +1,3 @@
-
-#+build ignore
-
 package misl
 
 import "core:math"
@@ -533,7 +530,7 @@ k :: proc "fmag"(x: f32) -> [2]f32 {
 	x: f32 = 6.0
 	regs[0] = x
 	fmag.run(prog, regs)
-	recon := regs[1] * math.pow2_f32(regs[0])
+	recon := regs[1] * math.pow2_f32(int(regs[0]))
 	testing.expect(t, f32_ulp_dist(recon, x) <= 0)
 	testing.expect(t, regs[1] >= 0.5 && regs[1] < 1.0)
 }

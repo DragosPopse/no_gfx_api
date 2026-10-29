@@ -505,6 +505,9 @@ Field_Flags_Signature :: Field_Flags{
 	.Semantics,
 	.Ref,
 	.Poly_Names,
+	.Flat,
+	.Noperspective,
+	.Centroid,
 }
 
 Field_Flags_Record_Poly_Params :: Field_Flags{
@@ -547,7 +550,7 @@ Field :: struct {
 	default_value: ^Expr,
 	tag: Token,
 	flags: Field_Flags,
-	semantics: ^Ident,
+	semantics: ^Expr, // after `|`: a name, or `import.name`
 	comment: ^Comment_Group,
 }
 
@@ -1536,7 +1539,7 @@ parse_operand :: proc(p: ^Parser, lhs: bool) -> ^Expr {
 			return type
 
 		
-		case "assert", "panic", "config", "intrinsic":
+		case "assert", "panic", "config", "intrinsic", "inout":
 			bd := ast_new(Basic_Directive, tok.pos, token_end_pos(name))
 			bd.tok = tok
 			bd.name = name.text
@@ -1890,7 +1893,7 @@ parse_field_list :: proc(p: ^Parser, follow: Token_Kind, allowed_flags: Field_Fl
 		
 		type, default_value: ^Expr
 		tag: Token
-		semantics: ^Ident
+		semantics: ^Expr
 
 		expect_token_after(p, .Colon, "field list")
 
@@ -1906,7 +1909,7 @@ parse_field_list :: proc(p: ^Parser, follow: Token_Kind, allowed_flags: Field_Fl
 
 		// semantic name with Pipe operator
 		if allow_token(p, .Or) {
-			semantics = parse_ident(p)
+			semantics = parse_semantic_name(p)
 			if .Semantics not_in allowed_flags {
 				parse_err(p, p.curr_tok.pos, "semantic names are only allowed on structs and shader stage parameters")
 				semantics = nil
@@ -2334,6 +2337,10 @@ parse_results :: proc(p: ^Parser) -> (list: ^Field_List) {
 	if p.curr_tok.kind != .Open_Paren {
 		type := parse_type(p)
 		field := new_ast_field(nil, type, nil)
+		if allow_token(p, .Or) {
+			field.semantics = parse_semantic_name(p)
+			field.end = field.semantics.end
+		}
 		list = ast_new(Field_List, field.pos, field.end)
 		list.list = make([]^Field, 1)
 		list.list[0] = field
@@ -2497,6 +2504,19 @@ new_blank_ident :: proc(p: ^Parser, pos: Token_Pos) -> ^Ident {
 	i := ast_new(Ident, pos, token_end_pos(tok))
 	i.name = "_"
 	return i
+}
+
+// The semantic after `|`: a name, or `import.name`. Nothing else, so a procedure body's `{` is not read into it.
+parse_semantic_name :: proc(p: ^Parser) -> ^Expr {
+	name := parse_ident(p)
+	if p.curr_tok.kind != .Period do return name
+	tok := expect_token(p, .Period)
+	field := parse_ident(p)
+	sel := ast_new(Selector_Expr, name.pos, field)
+	sel.expr = name
+	sel.op = tok
+	sel.field = field
+	return sel
 }
 
 parse_ident :: proc(p: ^Parser) -> ^Ident {

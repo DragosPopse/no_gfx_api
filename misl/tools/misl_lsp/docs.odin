@@ -68,6 +68,9 @@ entity_leading_docs :: proc(e: ^misl.Entity) -> string {
 // bare, call-site-resolved signature `hover_symbol_info` would otherwise show.
 // Optional `reference_uri` appends a markdown link (no editor underline).
 entity_hover_markdown :: proc(e: ^misl.Entity, ident: ^misl.Ident, reference_uri := "") -> string {
+	if e != nil && e.kind == .Semantic && e.semantic != .Inout {
+		if md, ok := hover_semantic_markdown(misl.semantic_name(e.semantic)); ok do return md
+	}
 	if e != nil {
 		if id, ok := misl.entity_compiler_builtin(e); ok {
 			name := e.name
