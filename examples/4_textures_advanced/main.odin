@@ -77,8 +77,8 @@ main :: proc()
         gpu.shader_destroy(cloud_frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     upload_arena := gpu.arena_create()
     defer gpu.arena_destroy(&upload_arena)
@@ -106,9 +106,9 @@ main :: proc()
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    sky_cubemap_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
-    cloud_3d_texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(cloud_3d_texture, {}))
-    linear_sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    sky_cubemap_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
+    cloud_3d_texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(cloud_3d_texture, {}))
+    linear_sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     now_ts := sdl.GetPerformanceCounter()
 

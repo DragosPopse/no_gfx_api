@@ -261,8 +261,8 @@ test_texture :: proc(target: Render_Target)
         gpu.shader_destroy(frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     Vertex :: struct { pos: [3]f32, uv: [2]f32 }
 
@@ -307,8 +307,8 @@ test_texture :: proc(target: Render_Target)
 
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    tex_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(tex, {}))
-    linear_sampler := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    tex_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(tex, {}))
+    linear_sampler := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     frame_arena := &upload_arena
 
@@ -477,8 +477,8 @@ test_texture_advanced :: proc(target: Render_Target)
         gpu.shader_destroy(volume_frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     upload_arena := gpu.arena_create()
     defer gpu.arena_destroy(&upload_arena)
@@ -506,9 +506,9 @@ test_texture_advanced :: proc(target: Render_Target)
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    sky_cubemap_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
-    texture_3d_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(texture_3d, {}))
-    linear_sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    sky_cubemap_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
+    texture_3d_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(texture_3d, {}))
+    linear_sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     frame_arena := &upload_arena
 
@@ -814,8 +814,8 @@ test_compute :: proc(target: Render_Target)
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
     output_info := gpu.Texture_Info {
@@ -827,10 +827,10 @@ test_compute :: proc(target: Render_Target)
     defer gpu.texture_free_and_destroy(&output_texture)
 
     // Create texture descriptor for sampled access (fragment shader)
-    texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
+    texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
     // Create texture descriptor for RW access (compute shader)
-    texture_rw_id := gpu.desc_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    texture_rw_id := gpu.descriptor_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     frame_arena := &arena
 
@@ -956,11 +956,11 @@ test_comparison_sampler :: proc(target: Render_Target)
     shadow_depth_texture := gpu.texture_alloc_and_create(shadow_depth_info)
     defer gpu.texture_free_and_destroy(&shadow_depth_texture)
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
-    shadow_tex_id  := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(shadow_depth_texture, {}))
-    shadow_sampler := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({compare_op = .Less}))
+    shadow_tex_id  := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(shadow_depth_texture, {}))
+    shadow_sampler := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({compare_op = .Less}))
 
     vert_shader := gpu.shader_create(#load("shaders/shadowmap.vert.spv", []u32), .Vertex)
     frag_shader := gpu.shader_create(#load("shaders/shadowmap.frag.spv", []u32), .Fragment)
@@ -1148,8 +1148,8 @@ test_sw_pathtracing :: proc(target: Render_Target)
     }
     context.logger = old_logger
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
     output_info := gpu.Texture_Info {
@@ -1204,9 +1204,9 @@ test_sw_pathtracing :: proc(target: Render_Target)
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
-    texture_rw_id := gpu.desc_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
+    texture_rw_id := gpu.descriptor_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     frame_arena := &arena
 
@@ -1485,8 +1485,8 @@ test_hw_pathtracing :: proc(target: Render_Target)
     }
     context.logger = old_logger
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
     output_info := gpu.Texture_Info {
@@ -1549,10 +1549,10 @@ test_hw_pathtracing :: proc(target: Render_Target)
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
-    texture_rw_id := gpu.desc_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
-    bvh_id := gpu.desc_pool_alloc_bvh(&desc_pool, scene.bvh)
+    texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
+    texture_rw_id := gpu.descriptor_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    bvh_id := gpu.descriptor_pool_alloc_bvh(&desc_pool, scene.bvh)
 
     frame_arena := &arena
 

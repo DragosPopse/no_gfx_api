@@ -324,12 +324,12 @@ texture_create: proc(desc: Texture_Info, storage: gpuptr, queue: Queue = nil, si
 texture_destroy: proc(texture: Texture, loc := #caller_location) : _texture_destroy
 
 // Descriptors
-desc_heap_create: proc(texture_count: u32 = 65536, texture_rw_count: u32 = 65536, sampler_count: u32 = 32, bvh_count: u32 = 16, name := "", loc := #caller_location) -> Descriptor_Heap : _desc_heap_create
-desc_heap_destroy: proc(heap: Descriptor_Heap, loc := #caller_location) : _desc_heap_destroy
-desc_heap_set_textures: proc(heap: Descriptor_Heap, start_idx: u32, textures: []Texture_Descriptor, loc := #caller_location) : _desc_heap_set_textures
-desc_heap_set_textures_rw: proc(heap: Descriptor_Heap, start_idx: u32, textures: []Texture_Descriptor, loc := #caller_location) : _desc_heap_set_textures_rw
-desc_heap_set_samplers : proc(heap: Descriptor_Heap, start_idx: u32, samplers: []Sampler_Descriptor, loc := #caller_location) : _desc_heap_set_samplers
-desc_heap_set_bvhs: proc(heap: Descriptor_Heap, start_idx: u32, bvhs: []BVH, loc := #caller_location) : _desc_heap_set_bvhs
+descriptor_heap_create: proc(texture_count: u32 = 65536, texture_rw_count: u32 = 65536, sampler_count: u32 = 32, bvh_count: u32 = 16, name := "", loc := #caller_location) -> Descriptor_Heap : _desc_heap_create
+descriptor_heap_destroy: proc(heap: Descriptor_Heap, loc := #caller_location) : _desc_heap_destroy
+descriptor_heap_set_textures: proc(heap: Descriptor_Heap, start_idx: u32, textures: []Texture_Descriptor, loc := #caller_location) : _desc_heap_set_textures
+descriptor_heap_set_textures_rw: proc(heap: Descriptor_Heap, start_idx: u32, textures: []Texture_Descriptor, loc := #caller_location) : _desc_heap_set_textures_rw
+descriptor_heap_set_samplers : proc(heap: Descriptor_Heap, start_idx: u32, samplers: []Sampler_Descriptor, loc := #caller_location) : _desc_heap_set_samplers
+descriptor_heap_set_bvhs: proc(heap: Descriptor_Heap, start_idx: u32, bvhs: []BVH, loc := #caller_location) : _desc_heap_set_bvhs
 texture_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor : _texture_descriptor
 texture_rw_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor : _texture_rw_descriptor
 sampler_descriptor: proc(sampler_desc: Sampler_Info, loc := #caller_location) -> Sampler_Descriptor : _sampler_descriptor
