@@ -407,6 +407,9 @@ cmd_draw_indexed_indirect_multi_raw: proc(cmd_buf: Command_Buffer, vertex_data, 
 
 cmd_build_blas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location) : _cmd_build_blas
 cmd_build_tlas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, instances: gpuptr, loc := #caller_location) : _cmd_build_tlas
+// Geometry/instance counts must match the last build.
+cmd_update_blas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location) : _cmd_update_blas
+cmd_update_tlas: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, instances: gpuptr, loc := #caller_location) : _cmd_update_tlas
 
 // Debug utilities
 cmd_begin_debug_label: proc(cmd_buf: Command_Buffer, name: string, color: [4]f32, loc := #caller_location) : _cmd_begin_debug_label

@@ -2128,7 +2128,12 @@ _blas_create :: proc(desc: BLAS_Info, storage: gpuptr, name := "", loc := #calle
 
 _blas_build_scratch_buffer_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
-    return u64(get_vk_blas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+    size_info := get_vk_blas_size_info(desc)
+    scratch_size := size_info.buildScratchSize
+    if .Update in desc.caps {
+        scratch_size = max(scratch_size, size_info.updateScratchSize)
+    }
+    return u64(scratch_size), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
 _tlas_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
@@ -2171,7 +2176,12 @@ _tlas_create :: proc(desc: TLAS_Info, storage: gpuptr, name := "", loc := #calle
 
 _tlas_build_scratch_buffer_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
-    return u64(get_vk_tlas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+    size_info := get_vk_tlas_size_info(desc)
+    scratch_size := size_info.buildScratchSize
+    if .Update in desc.caps {
+        scratch_size = max(scratch_size, size_info.updateScratchSize)
+    }
+    return u64(scratch_size), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
 _bvh_root_ptr :: proc(bvh: BVH, loc := #caller_location) -> rawptr
@@ -3102,12 +3112,27 @@ _cmd_draw_indexed_indirect_multi_raw :: proc(cmd_buf: Command_Buffer, vertex_dat
 
 _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
 {
+    cmd_build_or_update_blas(cmd_buf, bvh, scratch_storage, shapes, .BUILD, loc)
+}
+
+_cmd_update_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
+{
+    cmd_build_or_update_blas(cmd_buf, bvh, scratch_storage, shapes, .UPDATE, loc)
+}
+
+@(private="file")
+cmd_build_or_update_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape,
+                                 mode: vk.BuildAccelerationStructureModeKHR, loc := #caller_location)
+{
     if ctx.validation
     {
         ok := true
         ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
         ok &= check_ptr(scratch_storage, "scratch_storage", loc)
         ok &= check_bvh_must_be_blas(bvh, "bvh", loc)
+        if mode == .UPDATE {
+            ok &= check_bvh_allows_update(bvh, "bvh", loc)
+        }
         if !ok do return
     }
 
@@ -3136,7 +3161,11 @@ _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpup
     scratch, _ := acquire_scratch()
 
     build_info := to_vk_blas_desc(bvh_info.blas_desc, arena = scratch)
+    build_info.mode = mode
     build_info.dstAccelerationStructure = bvh_info.handle
+    if mode == .UPDATE {
+        build_info.srcAccelerationStructure = bvh_info.handle
+    }
     build_info.scratchData.deviceAddress = transmute(vk.DeviceAddress) scratch_storage.ptr
     assert(u32(len(shapes)) == build_info.geometryCount)
 
@@ -3176,6 +3205,18 @@ _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpup
 
 _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr, loc := #caller_location)
 {
+    cmd_build_or_update_tlas(cmd_buf, bvh, scratch_storage, instances, .BUILD, loc)
+}
+
+_cmd_update_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr, loc := #caller_location)
+{
+    cmd_build_or_update_tlas(cmd_buf, bvh, scratch_storage, instances, .UPDATE, loc)
+}
+
+@(private="file")
+cmd_build_or_update_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr,
+                                 mode: vk.BuildAccelerationStructureModeKHR, loc := #caller_location)
+{
     if ctx.validation
     {
         ok := true
@@ -3183,6 +3224,9 @@ _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, inst
         ok &= check_ptr(scratch_storage, "scratch_storage", loc)
         ok &= check_ptr(instances, "instances", loc)
         ok &= check_bvh_must_be_tlas(bvh, "bvh", loc)
+        if mode == .UPDATE {
+            ok &= check_bvh_allows_update(bvh, "bvh", loc)
+        }
         if !ok do return
     }
 
@@ -3193,7 +3237,11 @@ _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, inst
     scratch, _ := acquire_scratch()
 
     build_info := to_vk_tlas_desc(bvh_info.tlas_desc, arena = scratch)
+    build_info.mode = mode
     build_info.dstAccelerationStructure = bvh_info.handle
+    if mode == .UPDATE {
+        build_info.srcAccelerationStructure = bvh_info.handle
+    }
     build_info.scratchData.deviceAddress = transmute(vk.DeviceAddress) scratch_storage.ptr
     assert(build_info.geometryCount == 1)
 
@@ -3994,6 +4042,19 @@ check_bvh_must_be_blas :: proc(bvh: BVH, name: string, loc: runtime.Source_Code_
     bvh_info := pool_get(&ctx.bvhs, bvh)
     if !bvh_info.is_blas {
         log.errorf("'%v' must be a BLAS.", name, location = loc)
+        return false
+    }
+
+    return true
+}
+
+@(private="file")
+check_bvh_allows_update :: proc(bvh: BVH, name: string, loc: runtime.Source_Code_Location) -> bool
+{
+    bvh_info := pool_get(&ctx.bvhs, bvh)
+    caps := bvh_info.blas_desc.caps if bvh_info.is_blas else bvh_info.tlas_desc.caps
+    if .Update not_in caps {
+        log.errorf("'%v' was not created with {{.Update}}; cannot update in-place.", name, location = loc)
         return false
     }
 
