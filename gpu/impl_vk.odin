@@ -1984,16 +1984,16 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     return pool_add(&ctx.shaders, shader, { created_at = loc, name = name })
 }
 
-_shader_create :: proc(code: []u32, type: Shader_Type_Graphics, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
+_shader_create :: proc(code: []u32, type: Shader_Type_Graphics, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
 {
     vk_stage := to_vk_shader_stage(type)
-    return _shader_create_internal(code, false, vk_stage, entry_point_name, name = name, spec_constants = spec_constants, loc = loc)
+    return _shader_create_internal(code, false, vk_stage, entry, name = name, spec_constants = spec_constants, loc = loc)
 }
 
-_shader_create_compute :: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
+_shader_create_compute :: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
 {
     // TODO: Add validation for spec constants conflicting with backend allocated spec constants for workgroup size.
-    return _shader_create_internal(code, true, { .COMPUTE }, entry_point_name, group_size_x, group_size_y, group_size_z, name = name, spec_constants = spec_constants, loc = loc)
+    return _shader_create_internal(code, true, { .COMPUTE }, entry, group_size_x, group_size_y, group_size_z, name = name, spec_constants = spec_constants, loc = loc)
 }
 
 _shader_destroy :: proc(shader: Shader, loc := #caller_location)

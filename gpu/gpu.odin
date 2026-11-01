@@ -335,8 +335,8 @@ texture_rw_view_descriptor: proc(texture: Texture, view_desc: Texture_View_Info,
 sampler_descriptor: proc(sampler_desc: Sampler_Info, loc := #caller_location) -> Sampler_Descriptor : _sampler_descriptor
 
 // Shaders
-shader_create: proc(code: []u32, type: Shader_Type_Graphics, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create
-shader_create_compute: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create_compute
+shader_create: proc(code: []u32, type: Shader_Type_Graphics, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create
+shader_create_compute: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader : _shader_create_compute
 shader_destroy: proc(shader: Shader, loc := #caller_location) : _shader_destroy
 
 // Semaphores
