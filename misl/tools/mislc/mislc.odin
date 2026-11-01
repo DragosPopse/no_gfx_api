@@ -83,7 +83,7 @@ print_usage :: proc() {
 `
 	}
 	fmt.eprintf(
-`mislc — MISL (Minimal Shader Language) compiler
+`mislc -- MISL (Minimal Shader Language) compiler
 
 USAGE
   mislc build  <input.misl> [flags]
