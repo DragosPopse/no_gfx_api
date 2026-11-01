@@ -30,7 +30,6 @@ vs :: proc "vertex"(
 }
 
 fs :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
-	debug.assert(false, "test")
 	out = input.color
 	return out
 }
