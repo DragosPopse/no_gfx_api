@@ -84,10 +84,10 @@ main :: proc()
         gpu.mem_free(indices_local)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     upload_cmd_buf := gpu.commands_begin(.Main)
     gpu.cmd_mem_copy(upload_cmd_buf, verts_local, verts)

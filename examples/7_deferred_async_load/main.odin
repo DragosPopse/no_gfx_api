@@ -143,12 +143,12 @@ main :: proc() {
 		gpu.mem_free(full_screen_quad_indices)
 	}
 
-	desc_pool := gpu.desc_pool_create()
-	defer gpu.desc_pool_destroy(&desc_pool)
+	desc_pool := gpu.descriptor_pool_create()
+	defer gpu.descriptor_pool_destroy(&desc_pool)
 
 	magenta_texture := create_magenta_texture(&upload_arena, upload_cmd_buf)
 	defer gpu.texture_free_and_destroy(&magenta_texture)
-	magenta_texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(magenta_texture, {}))
+	magenta_texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(magenta_texture, {}))
 
 	scene, texture_infos, gltf_data := shared.load_scene_gltf(Sponza_Scene, magenta_texture_id)
 	defer {
@@ -240,7 +240,7 @@ main :: proc() {
 		}
 	}
 
-	sampler_id := gpu.desc_pool_alloc_sampler(
+	sampler_id := gpu.descriptor_pool_alloc_sampler(
 		&desc_pool,
 		gpu.sampler_descriptor({ max_anisotropy = min(16.0, gpu.device_limits().max_anisotropy) })
 	)
@@ -536,13 +536,13 @@ create_gbuffer_textures :: proc(
 	gbuffer_metallic_roughness: gpu.Owned_Texture,
 	depth_texture: gpu.Owned_Texture,
 ) {
-	gbuffer_desc := gpu.Texture_Desc {
+	gbuffer_info := gpu.Texture_Info {
 		dimensions   = {u32(window_size_x), u32(window_size_y), 1},
 		format       = .RGBA8_Unorm,
 		usage        = {.Color_Attachment, .Sampled, .Storage},
 	}
 
-	depth_desc := gpu.Texture_Desc {
+	depth_info := gpu.Texture_Info {
 		dimensions   = {u32(window_size_x), u32(window_size_y), 1},
 		format       = .D32_Float,
 		usage        = {.Depth_Stencil_Attachment},
@@ -550,8 +550,8 @@ create_gbuffer_textures :: proc(
 
 	// Albedo
 	{
-		new_gbuffer_albedo := gpu.texture_alloc_and_create(gbuffer_desc)
-		GBUFFER_ALBEDO_IDX = gpu.desc_pool_alloc_texture(
+		new_gbuffer_albedo := gpu.texture_alloc_and_create(gbuffer_info)
+		GBUFFER_ALBEDO_IDX = gpu.descriptor_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_albedo, {})
 		)
@@ -560,8 +560,8 @@ create_gbuffer_textures :: proc(
 
 	// Normal
 	{
-		new_gbuffer_normal := gpu.texture_alloc_and_create(gbuffer_desc)
-		GBUFFER_NORMAL_IDX = gpu.desc_pool_alloc_texture(
+		new_gbuffer_normal := gpu.texture_alloc_and_create(gbuffer_info)
+		GBUFFER_NORMAL_IDX = gpu.descriptor_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_normal, {})
 		)
@@ -570,8 +570,8 @@ create_gbuffer_textures :: proc(
 
 	// Metallic roughness
 	{
-		new_gbuffer_metallic_roughness := gpu.texture_alloc_and_create(gbuffer_desc)
-		GBUFFER_METALLIC_ROUGHNESS_IDX = gpu.desc_pool_alloc_texture(
+		new_gbuffer_metallic_roughness := gpu.texture_alloc_and_create(gbuffer_info)
+		GBUFFER_METALLIC_ROUGHNESS_IDX = gpu.descriptor_pool_alloc_texture(
 			desc_pool,
 			gpu.texture_view_descriptor(new_gbuffer_metallic_roughness, {})
 		)
@@ -580,7 +580,7 @@ create_gbuffer_textures :: proc(
 
 	// Depth
 	{
-		new_depth_texture := gpu.texture_alloc_and_create(depth_desc)
+		new_depth_texture := gpu.texture_alloc_and_create(depth_info)
 		depth_texture = new_depth_texture
 	}
 
@@ -709,7 +709,7 @@ load_scene_textures_from_gltf :: proc(
                     &upload_arena
                 )
 
-				texture_idx = gpu.desc_pool_alloc_texture(desc_pool, gpu.texture_view_descriptor(texture, {}))
+				texture_idx = gpu.descriptor_pool_alloc_texture(desc_pool, gpu.texture_view_descriptor(texture, {}))
                 if sync.guard(&mutex) do image_to_texture[info.image_index] = {texture, texture_idx}
             } else {
                 texture := upload_texture(
@@ -717,7 +717,7 @@ load_scene_textures_from_gltf :: proc(
                     &upload_arena
                 )
 
-				texture_idx = gpu.desc_pool_alloc_texture(desc_pool, gpu.texture_view_descriptor(texture, {}))
+				texture_idx = gpu.descriptor_pool_alloc_texture(desc_pool, gpu.texture_view_descriptor(texture, {}))
                 if sync.guard(&mutex) do image_to_texture[info.image_index] = {texture, texture_idx}
             }
 

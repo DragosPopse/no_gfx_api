@@ -62,11 +62,11 @@ main :: proc()
         gpu.shader_destroy(frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_desc := gpu.Texture_Info {
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .RGBA8_Unorm,
         usage = { .Storage, .Sampled },
@@ -75,10 +75,10 @@ main :: proc()
     defer gpu.texture_free_and_destroy(&output_texture)
 
     // Create texture descriptor for sampled access (fragment shader)
-    texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
+    texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
     // Create texture descriptor for RW access (compute shader)
-    texture_rw_id := gpu.desc_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    texture_rw_id := gpu.descriptor_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     // Indirect dispatch command (group counts)
     indirect_dispatch_command := gpu.mem_alloc(gpu.Dispatch_Indirect_Command)
@@ -163,8 +163,8 @@ main :: proc()
             output_texture = gpu.texture_alloc_and_create(output_desc)
 
             // Update descriptor for new texture
-            gpu.desc_heap_set_textures(&desc_pool, texture_id, { gpu.texture_view_descriptor(output_texture, {}) })
-            gpu.desc_heap_set_textures_rw(&desc_pool, texture_rw_id, { gpu.texture_rw_view_descriptor(output_texture, {}) })
+            gpu.descriptor_heap_set_textures(&desc_pool, texture_id, { gpu.texture_view_descriptor(output_texture, {}) })
+            gpu.descriptor_heap_set_textures_rw(&desc_pool, texture_rw_id, { gpu.texture_rw_view_descriptor(output_texture, {}) })
         }
 
         swapchain := gpu.swapchain_acquire_next()  // Blocks CPU until at least one frame is available.

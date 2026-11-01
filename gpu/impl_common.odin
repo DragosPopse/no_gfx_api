@@ -298,7 +298,7 @@ fatal_error :: proc(fmt_: string, args: ..any, location := #caller_location)
 
 // Struct cleanup
 
-texture_desc_cleanup :: #force_inline proc(desc: Texture_Desc) -> Texture_Desc
+texture_desc_cleanup :: #force_inline proc(desc: Texture_Info) -> Texture_Info
 {
     res := desc
     if res.type == .Default do res.type = .D2
@@ -312,7 +312,7 @@ texture_desc_cleanup :: #force_inline proc(desc: Texture_Desc) -> Texture_Desc
     return res
 }
 
-texture_view_desc_cleanup :: #force_inline proc(texture: Texture, desc: Texture_View_Desc) -> Texture_View_Desc
+texture_view_desc_cleanup :: #force_inline proc(texture: Texture, desc: Texture_View_Info) -> Texture_View_Info
 {
     res := desc
     if res.format == .Default {

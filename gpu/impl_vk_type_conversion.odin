@@ -212,14 +212,14 @@ to_vk_address_mode :: proc(addr_mode: Address_Mode) -> vk.SamplerAddressMode
     return {}
 }
 
-to_vk_blas_desc :: proc(blas_desc: BLAS_Desc, arena: runtime.Allocator) -> vk.AccelerationStructureBuildGeometryInfoKHR
+to_vk_blas_desc :: proc(blas_desc: BLAS_Info, arena: runtime.Allocator) -> vk.AccelerationStructureBuildGeometryInfoKHR
 {
     geometries := make([]vk.AccelerationStructureGeometryKHR, len(blas_desc.shapes), allocator = arena)
     for &geom, i in geometries
     {
         switch shape in blas_desc.shapes[i]
         {
-            case BVH_Mesh_Desc:
+            case BVH_Mesh_Info:
             {
                 flags: vk.GeometryFlagsKHR = { .OPAQUE } if shape.opacity == .Fully_Opaque else {}
                 geom = vk.AccelerationStructureGeometryKHR {
@@ -238,7 +238,7 @@ to_vk_blas_desc :: proc(blas_desc: BLAS_Desc, arena: runtime.Allocator) -> vk.Ac
                     } }
                 }
             }
-            case BVH_AABB_Desc:
+            case BVH_AABB_Info:
             {
                 flags: vk.GeometryFlagsKHR = { .OPAQUE } if shape.opacity == .Fully_Opaque else {}
                 geom = vk.AccelerationStructureGeometryKHR {
@@ -265,7 +265,7 @@ to_vk_blas_desc :: proc(blas_desc: BLAS_Desc, arena: runtime.Allocator) -> vk.Ac
     }
 }
 
-to_vk_tlas_desc :: proc(tlas_desc: TLAS_Desc, arena: runtime.Allocator) -> vk.AccelerationStructureBuildGeometryInfoKHR
+to_vk_tlas_desc :: proc(tlas_desc: TLAS_Info, arena: runtime.Allocator) -> vk.AccelerationStructureBuildGeometryInfoKHR
 {
     geometry := new(vk.AccelerationStructureGeometryKHR)
     geometry^ = {
@@ -335,7 +335,7 @@ to_vk_blend_factor :: proc(blend: Blend_Factor) -> vk.BlendFactor
     return {}
 }
 
-to_vk_image_create_info :: proc(desc: Texture_Desc) -> vk.ImageCreateInfo
+to_vk_image_create_info :: proc(desc: Texture_Info) -> vk.ImageCreateInfo
 {
     return {
         sType = .IMAGE_CREATE_INFO,

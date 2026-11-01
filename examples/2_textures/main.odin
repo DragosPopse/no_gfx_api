@@ -58,8 +58,8 @@ main :: proc()
         gpu.shader_destroy(frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     Vertex :: struct { pos: [3]f32, uv: [2]f32 }
 
@@ -108,9 +108,9 @@ main :: proc()
 
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    bowser_tex_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(bowser_tex, {}))
-    peach_tex_id  := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(peach_tex, {}))
-    linear_sampler := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    bowser_tex_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(bowser_tex, {}))
+    peach_tex_id  := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(peach_tex, {}))
+    linear_sampler := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     now_ts := sdl.GetPerformanceCounter()
 

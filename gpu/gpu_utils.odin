@@ -282,7 +282,7 @@ Owned_Texture :: struct
     mem: gpuptr,
 }
 
-texture_alloc_and_create :: proc(desc: Texture_Desc, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Owned_Texture
+texture_alloc_and_create :: proc(desc: Texture_Info, queue: Queue = nil, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Owned_Texture
 {
     size, align := texture_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -303,7 +303,7 @@ Owned_BVH :: struct
     mem: gpuptr,
 }
 
-blas_alloc_and_create :: proc(desc: BLAS_Desc, loc := #caller_location) -> Owned_BVH
+blas_alloc_and_create :: proc(desc: BLAS_Info, loc := #caller_location) -> Owned_BVH
 {
     size, align := bvh_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -311,7 +311,7 @@ blas_alloc_and_create :: proc(desc: BLAS_Desc, loc := #caller_location) -> Owned
     return Owned_BVH { bvh, ptr }
 }
 
-tlas_alloc_and_create :: proc(desc: TLAS_Desc, loc := #caller_location) -> Owned_BVH
+tlas_alloc_and_create :: proc(desc: TLAS_Info, loc := #caller_location) -> Owned_BVH
 {
     size, align := bvh_size_and_align(desc, loc = loc)
     ptr := mem_alloc_raw(size, 1, align, .GPU, loc = loc)
@@ -328,19 +328,33 @@ bvh_free_and_destroy :: proc(bvh: ^Owned_BVH, loc := #caller_location)
     bvh^ = {}
 }
 
-blas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Desc, loc := #caller_location) -> ptr
+blas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Info, loc := #caller_location) -> ptr
 {
     size, align := blas_build_scratch_buffer_size_and_align(desc, loc = loc)
     return arena_alloc_raw(arena, size, 1, align)
 }
 
-tlas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Desc, loc := #caller_location) -> ptr
+tlas_alloc_build_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Info, loc := #caller_location) -> ptr
 {
     size, align := tlas_build_scratch_buffer_size_and_align(desc, loc = loc)
     return arena_alloc_raw(arena, size, 1, align)
 }
 
 bvh_alloc_build_scratch_buffer :: proc { blas_alloc_build_scratch_buffer, tlas_alloc_build_scratch_buffer }
+
+blas_alloc_update_scratch_buffer :: proc(arena: ^Arena, desc: BLAS_Info, loc := #caller_location) -> ptr
+{
+    size, align := blas_update_scratch_buffer_size_and_align(desc, loc = loc)
+    return arena_alloc_raw(arena, size, 1, align)
+}
+
+tlas_alloc_update_scratch_buffer :: proc(arena: ^Arena, desc: TLAS_Info, loc := #caller_location) -> ptr
+{
+    size, align := tlas_update_scratch_buffer_size_and_align(desc, loc = loc)
+    return arena_alloc_raw(arena, size, 1, align)
+}
+
+bvh_alloc_update_scratch_buffer :: proc { blas_alloc_update_scratch_buffer, tlas_alloc_update_scratch_buffer }
 
 // Swapchain utils
 
@@ -382,7 +396,7 @@ Scoped_Render_Pass_Out :: struct
 }
 
 @(deferred_out = cmd_scoped_render_pass_end)
-cmd_scoped_render_pass :: #force_inline proc(cmd_buf: Command_Buffer, desc: Render_Pass_Desc, loc := #caller_location) -> Scoped_Render_Pass_Out
+cmd_scoped_render_pass :: #force_inline proc(cmd_buf: Command_Buffer, desc: Render_Pass_Info, loc := #caller_location) -> Scoped_Render_Pass_Out
 {
     cmd_begin_render_pass(cmd_buf, desc, loc)
     return { cmd_buf, loc }
@@ -448,106 +462,106 @@ Descriptor_Pool :: struct
 // slots than are actually needed. Most of the time a single global
 // descriptor pool is good enough and for that, these defaults are
 // fairly reasonable.
-desc_pool_create :: proc(texture_count: u32 = 65536,
+descriptor_pool_create :: proc(texture_count: u32 = 65536,
                          texture_rw_count: u32 = 65536,
                          sampler_count: u32 = 32,
                          bvh_count: u32 = 16,
                          loc := #caller_location) -> Descriptor_Pool
 {
     res: Descriptor_Pool
-    res.texture_pool = desc_pool_resource_init(i64(texture_count), Texture_Descriptor)
-    res.sampler_pool = desc_pool_resource_init(i64(sampler_count), Sampler_Descriptor)
-    res.texture_rw_pool = desc_pool_resource_init(i64(texture_rw_count), Texture_Descriptor)
-    res.bvh_pool = desc_pool_resource_init(i64(bvh_count), BVH)
-    res.heap = desc_heap_create(texture_count, texture_rw_count, sampler_count, bvh_count, loc = loc)
+    res.texture_pool = descriptor_pool_resource_init(i64(texture_count), Texture_Descriptor)
+    res.sampler_pool = descriptor_pool_resource_init(i64(sampler_count), Sampler_Descriptor)
+    res.texture_rw_pool = descriptor_pool_resource_init(i64(texture_rw_count), Texture_Descriptor)
+    res.bvh_pool = descriptor_pool_resource_init(i64(bvh_count), BVH)
+    res.heap = descriptor_heap_create(texture_count, texture_rw_count, sampler_count, bvh_count, loc = loc)
     return res
 }
 
-desc_pool_destroy :: proc(pool: ^Descriptor_Pool, loc := #caller_location)
+descriptor_pool_destroy :: proc(pool: ^Descriptor_Pool, loc := #caller_location)
 {
-    desc_pool_resource_destroy(&pool.texture_pool)
-    desc_pool_resource_destroy(&pool.texture_rw_pool)
-    desc_pool_resource_destroy(&pool.sampler_pool)
-    desc_pool_resource_destroy(&pool.bvh_pool)
-    desc_heap_destroy(pool.heap, loc = loc)
+    descriptor_pool_resource_destroy(&pool.texture_pool)
+    descriptor_pool_resource_destroy(&pool.texture_rw_pool)
+    descriptor_pool_resource_destroy(&pool.sampler_pool)
+    descriptor_pool_resource_destroy(&pool.bvh_pool)
+    descriptor_heap_destroy(pool.heap, loc = loc)
     pool^ = {}
 }
 
-desc_pool_free_textures :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
-    desc_pool_resource_free(&pool.texture_pool, idx)
+descriptor_pool_free_textures :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
+    descriptor_pool_resource_free(&pool.texture_pool, idx)
 }
-desc_pool_free_textures_rw :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
-    desc_pool_resource_free(&pool.texture_rw_pool, idx)
+descriptor_pool_free_textures_rw :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
+    descriptor_pool_resource_free(&pool.texture_rw_pool, idx)
 }
-desc_pool_free_samplers :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
-    desc_pool_resource_free(&pool.sampler_pool, idx)
+descriptor_pool_free_samplers :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
+    descriptor_pool_resource_free(&pool.sampler_pool, idx)
 }
-desc_pool_free_bvhs :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
-    desc_pool_resource_free(&pool.bvh_pool, idx)
+descriptor_pool_free_bvhs :: #force_inline proc(pool: ^Descriptor_Pool, idx: u32) {
+    descriptor_pool_resource_free(&pool.bvh_pool, idx)
 }
 
-desc_pool_free_all :: proc(pool: ^Descriptor_Pool)
+descriptor_pool_free_all :: proc(pool: ^Descriptor_Pool)
 {
-    desc_pool_resource_free_all(&pool.texture_pool)
-    desc_pool_resource_free_all(&pool.texture_rw_pool)
-    desc_pool_resource_free_all(&pool.sampler_pool)
-    desc_pool_resource_free_all(&pool.bvh_pool)
+    descriptor_pool_resource_free_all(&pool.texture_pool)
+    descriptor_pool_resource_free_all(&pool.texture_rw_pool)
+    descriptor_pool_resource_free_all(&pool.sampler_pool)
+    descriptor_pool_resource_free_all(&pool.bvh_pool)
 }
 
-desc_pool_alloc_texture :: proc(pool: ^Descriptor_Pool, texture: Texture_Descriptor) -> u32 {
-    return desc_pool_alloc_textures(pool, { texture })
+descriptor_pool_alloc_texture :: proc(pool: ^Descriptor_Pool, texture: Texture_Descriptor) -> u32 {
+    return descriptor_pool_alloc_textures(pool, { texture })
 }
-desc_pool_alloc_texture_rw :: proc(pool: ^Descriptor_Pool, texture: Texture_Descriptor) -> u32 {
-    return desc_pool_alloc_textures_rw(pool, { texture })
+descriptor_pool_alloc_texture_rw :: proc(pool: ^Descriptor_Pool, texture: Texture_Descriptor) -> u32 {
+    return descriptor_pool_alloc_textures_rw(pool, { texture })
 }
-desc_pool_alloc_sampler :: proc(pool: ^Descriptor_Pool, sampler: Sampler_Descriptor) -> u32 {
-    return desc_pool_alloc_samplers(pool, { sampler })
+descriptor_pool_alloc_sampler :: proc(pool: ^Descriptor_Pool, sampler: Sampler_Descriptor) -> u32 {
+    return descriptor_pool_alloc_samplers(pool, { sampler })
 }
-desc_pool_alloc_bvh :: proc(pool: ^Descriptor_Pool, bvh: BVH) -> u32 {
-    return desc_pool_alloc_bvhs(pool, { bvh })
+descriptor_pool_alloc_bvh :: proc(pool: ^Descriptor_Pool, bvh: BVH) -> u32 {
+    return descriptor_pool_alloc_bvhs(pool, { bvh })
 }
 
-// Passing multiple descriptors to desc_pool_alloc_X is useful for contiguous descriptors.
+// Passing multiple descriptors to descriptor_pool_alloc_X is useful for contiguous descriptors.
 // One usecase for this is to group descriptors into contiguous sets. This enables grouping
 // based on update frequency and so on. In the shader you can store a single index and then
 // do something like:
 // texture_sample(material_base_id + 0, ...);
 // texture_sample(material_base_id + 1, ...);
 // texture_sample(material_base_id + 2, ...);
-desc_pool_alloc_textures :: proc(pool: ^Descriptor_Pool, textures: []Texture_Descriptor) -> u32
+descriptor_pool_alloc_textures :: proc(pool: ^Descriptor_Pool, textures: []Texture_Descriptor) -> u32
 {
     assert(len(textures) <= int(max(u8)))
-    idx := desc_pool_resource_alloc(&pool.texture_pool, i64(len(textures)))
-    desc_heap_set_textures(pool.heap, idx, textures)
+    idx := descriptor_pool_resource_alloc(&pool.texture_pool, i64(len(textures)))
+    descriptor_heap_set_textures(pool.heap, idx, textures)
     return idx
 }
 
-desc_pool_alloc_textures_rw :: proc(pool: ^Descriptor_Pool, textures_rw: []Texture_Descriptor) -> u32
+descriptor_pool_alloc_textures_rw :: proc(pool: ^Descriptor_Pool, textures_rw: []Texture_Descriptor) -> u32
 {
     assert(len(textures_rw) <= int(max(u8)))
-    idx := desc_pool_resource_alloc(&pool.texture_rw_pool, i64(len(textures_rw)))
-    desc_heap_set_textures_rw(pool.heap, idx, textures_rw)
+    idx := descriptor_pool_resource_alloc(&pool.texture_rw_pool, i64(len(textures_rw)))
+    descriptor_heap_set_textures_rw(pool.heap, idx, textures_rw)
     return idx
 }
 
-desc_pool_alloc_samplers :: proc(pool: ^Descriptor_Pool, samplers: []Sampler_Descriptor) -> u32
+descriptor_pool_alloc_samplers :: proc(pool: ^Descriptor_Pool, samplers: []Sampler_Descriptor) -> u32
 {
     assert(len(samplers) <= int(max(u8)))
-    idx := desc_pool_resource_alloc(&pool.sampler_pool, i64(len(samplers)))
-    desc_heap_set_samplers(pool.heap, idx, samplers)
+    idx := descriptor_pool_resource_alloc(&pool.sampler_pool, i64(len(samplers)))
+    descriptor_heap_set_samplers(pool.heap, idx, samplers)
     return idx
 }
 
-desc_pool_alloc_bvhs :: proc(pool: ^Descriptor_Pool, bvhs: []BVH) -> u32
+descriptor_pool_alloc_bvhs :: proc(pool: ^Descriptor_Pool, bvhs: []BVH) -> u32
 {
     assert(len(bvhs) <= int(max(u8)))
-    idx := desc_pool_resource_alloc(&pool.bvh_pool, i64(len(bvhs)))
-    desc_heap_set_bvhs(pool.heap, idx, bvhs)
+    idx := descriptor_pool_resource_alloc(&pool.bvh_pool, i64(len(bvhs)))
+    descriptor_heap_set_bvhs(pool.heap, idx, bvhs)
     return idx
 }
 
 @(private="file")
-desc_pool_resource_init :: proc(res_count: i64, $T: typeid) -> Descriptor_Pool_Resource(T)
+descriptor_pool_resource_init :: proc(res_count: i64, $T: typeid) -> Descriptor_Pool_Resource(T)
 {
     res: Descriptor_Pool_Resource(T)
     res.res_count = 0
@@ -556,7 +570,7 @@ desc_pool_resource_init :: proc(res_count: i64, $T: typeid) -> Descriptor_Pool_R
 }
 
 @(private="file")
-desc_pool_resource_alloc :: proc(pool: ^Descriptor_Pool_Resource($T), count: i64) -> u32
+descriptor_pool_resource_alloc :: proc(pool: ^Descriptor_Pool_Resource($T), count: i64) -> u32
 {
     assert(count > 0)
     assert(count <= i64(max(u8)))
@@ -592,7 +606,7 @@ desc_pool_resource_alloc :: proc(pool: ^Descriptor_Pool_Resource($T), count: i64
 }
 
 @(private="file")
-desc_pool_resource_free :: proc(pool: ^Descriptor_Pool_Resource($T), idx: u32)
+descriptor_pool_resource_free :: proc(pool: ^Descriptor_Pool_Resource($T), idx: u32)
 {
     sync.guard(&pool.lock)
 
@@ -623,7 +637,7 @@ desc_pool_resource_free :: proc(pool: ^Descriptor_Pool_Resource($T), idx: u32)
 }
 
 @(private="file")
-desc_pool_resource_free_all :: proc(pool: ^Descriptor_Pool_Resource($T))
+descriptor_pool_resource_free_all :: proc(pool: ^Descriptor_Pool_Resource($T))
 {
     for &freelist in pool.freelists do delete(freelist.free)
     delete(pool.freelists)
@@ -631,7 +645,7 @@ desc_pool_resource_free_all :: proc(pool: ^Descriptor_Pool_Resource($T))
 }
 
 @(private="file")
-desc_pool_resource_destroy :: proc(pool: ^Descriptor_Pool_Resource($T))
+descriptor_pool_resource_destroy :: proc(pool: ^Descriptor_Pool_Resource($T))
 {
-    desc_pool_resource_free_all(pool)
+    descriptor_pool_resource_free_all(pool)
 }

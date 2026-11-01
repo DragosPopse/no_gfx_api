@@ -55,12 +55,12 @@ main :: proc()
 
     gpu.swapchain_create_from_sdl(window, Frames_In_Flight)
 
-    depth_desc := gpu.Texture_Desc {
+    depth_info := gpu.Texture_Info {
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .D32_Float,
         usage = { .Depth_Stencil_Attachment },
     }
-    depth_texture := gpu.texture_alloc_and_create(depth_desc)
+    depth_texture := gpu.texture_alloc_and_create(depth_info)
     defer gpu.texture_free_and_destroy(&depth_texture)
 
     sky_vert_shader := gpu.shader_create(#load("shaders/sky.vert.spv", []u32), .Vertex)
@@ -77,8 +77,8 @@ main :: proc()
         gpu.shader_destroy(cloud_frag_shader)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     upload_arena := gpu.arena_create()
     defer gpu.arena_destroy(&upload_arena)
@@ -106,9 +106,9 @@ main :: proc()
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    sky_cubemap_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
-    cloud_3d_texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(cloud_3d_texture, {}))
-    linear_sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    sky_cubemap_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(sky_cubemap, {}))
+    cloud_3d_texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(cloud_3d_texture, {}))
+    linear_sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
 
     now_ts := sdl.GetPerformanceCounter()
 
@@ -139,10 +139,10 @@ main :: proc()
         {
             gpu.queue_wait_idle(.Main)
             gpu.swapchain_resize({ u32(window_size_x), u32(window_size_y) })
-            depth_desc.dimensions.x = u32(window_size_x)
-            depth_desc.dimensions.y = u32(window_size_y)
+            depth_info.dimensions.x = u32(window_size_x)
+            depth_info.dimensions.y = u32(window_size_y)
             gpu.texture_free_and_destroy(&depth_texture)
-            depth_texture = gpu.texture_alloc_and_create(depth_desc)
+            depth_texture = gpu.texture_alloc_and_create(depth_info)
         }
 
         swapchain := gpu.swapchain_acquire_next()  // Blocks CPU until at least one frame is available.

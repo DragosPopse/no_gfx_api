@@ -85,11 +85,11 @@ main :: proc()
         gltf2.unload(gltf_data)
     }
 
-    desc_pool := gpu.desc_pool_create()
-    defer gpu.desc_pool_destroy(&desc_pool)
+    desc_pool := gpu.descriptor_pool_create()
+    defer gpu.descriptor_pool_destroy(&desc_pool)
 
     // Create a texture for the compute shader to write to
-    output_desc := gpu.Texture_Desc {
+    output_desc := gpu.Texture_Info {
         type = .D2,
         dimensions = { u32(window_size_x), u32(window_size_y), 1 },
         format = .RGBA16_Float,
@@ -149,10 +149,10 @@ main :: proc()
     gpu.cmd_barrier(upload_cmd_buf, .Transfer, .All, {})
     gpu.queue_submit(.Main, { upload_cmd_buf })
 
-    texture_id := gpu.desc_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
-    texture_rw_id := gpu.desc_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
-    sampler_id := gpu.desc_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
-    bvh_id := gpu.desc_pool_alloc_bvh(&desc_pool, scene.bvh)
+    texture_id := gpu.descriptor_pool_alloc_texture(&desc_pool, gpu.texture_view_descriptor(output_texture, {}))
+    texture_rw_id := gpu.descriptor_pool_alloc_texture_rw(&desc_pool, gpu.texture_rw_view_descriptor(output_texture, {}))
+    sampler_id := gpu.descriptor_pool_alloc_sampler(&desc_pool, gpu.sampler_descriptor({}))
+    bvh_id := gpu.descriptor_pool_alloc_bvh(&desc_pool, scene.bvh)
 
     now_ts := sdl.GetPerformanceCounter()
     total_time: f32 = 0.0
@@ -196,8 +196,8 @@ main :: proc()
             output_texture = gpu.texture_alloc_and_create(output_desc)
 
             // Update descriptor for new texture
-            gpu.desc_heap_set_textures(&desc_pool, texture_id, { gpu.texture_view_descriptor(output_texture, {}) })
-            gpu.desc_heap_set_textures_rw(&desc_pool, texture_rw_id, { gpu.texture_rw_view_descriptor(output_texture, {}) })
+            gpu.descriptor_heap_set_textures(&desc_pool, texture_id, { gpu.texture_view_descriptor(output_texture, {}) })
+            gpu.descriptor_heap_set_textures_rw(&desc_pool, texture_rw_id, { gpu.texture_rw_view_descriptor(output_texture, {}) })
 
             accum_counter = 0
         }
@@ -343,30 +343,30 @@ build_blas :: proc(bvh_scratch_arena: ^gpu.Arena, cmd_buf: gpu.Command_Buffer, p
 {
     assert(idx_count % 3 == 0)
 
-    desc := gpu.BLAS_Desc {
+    info := gpu.BLAS_Info {
         hint = .Prefer_Fast_Trace,
         shapes = {
-            gpu.BVH_Mesh_Desc {
+            gpu.BVH_Mesh_Info {
                 vertex_stride = 16,
                 max_vertex = vert_count - 1,
                 tri_count = idx_count / 3,
             }
         }
     }
-    bvh := gpu.bvh_alloc_and_create(desc)
-    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+    bvh := gpu.bvh_alloc_and_create(info)
+    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
     gpu.cmd_build_blas(cmd_buf, bvh, scratch, { gpu.BVH_Mesh { verts = positions.gpu.ptr, indices = indices.gpu.ptr } })
     return bvh
 }
 
 build_tlas :: proc(bvh_scratch_arena: ^gpu.Arena, cmd_buf: gpu.Command_Buffer, instances: gpu.gpuptr, instance_count: u32) -> gpu.Owned_BVH
 {
-    desc := gpu.TLAS_Desc {
+    info := gpu.TLAS_Info {
         hint = .Prefer_Fast_Trace,
         instance_count = instance_count
     }
-    bvh := gpu.bvh_alloc_and_create(desc)
-    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, desc)
+    bvh := gpu.bvh_alloc_and_create(info)
+    scratch := gpu.bvh_alloc_build_scratch_buffer(bvh_scratch_arena, info)
     gpu.cmd_build_tlas(cmd_buf, bvh, scratch, instances)
     return bvh
 }

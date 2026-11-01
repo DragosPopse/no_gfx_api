@@ -72,12 +72,12 @@ Context :: struct
     // Resource pools
     allocs: Resource_Pool(Alloc_Handle, Alloc_Info),
     queues: [Queue]Queue_Info,  // Reserve slot 0 for invalid queue.
-    textures: Resource_Pool(Texture_Handle, Texture_Info),
-    bvhs: Resource_Pool(BVH, BVH_Info),
-    shaders: Resource_Pool(Shader, Shader_Info),
+    textures: Resource_Pool(Texture_Handle, Texture_Impl_Info),
+    bvhs: Resource_Pool(BVH, BVH_Impl_Info),
+    shaders: Resource_Pool(Shader, Shader_Impl_Info),
     command_buffers: Resource_Pool(Command_Buffer, Command_Buffer_Info),
     semaphores: Resource_Pool(Semaphore, vk.Semaphore),
-    desc_heaps: Resource_Pool(Descriptor_Heap, Descriptor_Heap_Info),
+    desc_heaps: Resource_Pool(Descriptor_Heap, Descriptor_Heap_Impl_Info),
 
     cmd_bufs_sems: [Queue]Semaphore,
     cmd_bufs_counters: [Queue]u64,
@@ -112,7 +112,7 @@ Thread_Local_Context :: struct
 {
     pools: [Queue]vk.CommandPool,
     free_buffers: [Queue]priority_queue.Priority_Queue(Free_Command_Buffer),
-    samplers: [dynamic]Sampler_Info,  // Samplers are interned but have permanent lifetime
+    samplers: [dynamic]Sampler_Impl_Info,  // Samplers are interned but have permanent lifetime
 }
 
 @(private="file")
@@ -123,14 +123,14 @@ Physical_Properties :: struct
 }
 
 @(private="file")
-BVH_Info :: struct
+BVH_Impl_Info :: struct
 {
     handle: vk.AccelerationStructureKHR,
     mem: rawptr,
     is_blas: bool,
-    shapes: [dynamic]BVH_Shape_Desc,  // Only used if BLAS.
-    blas_desc: BLAS_Desc,
-    tlas_desc: TLAS_Desc,
+    shapes: [dynamic]BVH_Shape_Info,  // Only used if BLAS.
+    blas_desc: BLAS_Info,
+    tlas_desc: TLAS_Info,
 }
 
 @(private="file")
@@ -151,7 +151,7 @@ Alloc_Impl_Info :: struct
 }
 
 @(private="file")
-Texture_Info :: struct
+Texture_Impl_Info :: struct
 {
     handle: vk.Image,
     views: [dynamic]Image_View_Info,
@@ -166,7 +166,7 @@ Image_View_Info :: struct
 }
 
 @(private="file")
-Sampler_Info :: struct
+Sampler_Impl_Info :: struct
 {
     info: vk.SamplerCreateInfo,
     sampler: vk.Sampler,
@@ -181,7 +181,7 @@ Queue_Info :: struct
 }
 
 @(private="file")
-Shader_Info :: struct {
+Shader_Impl_Info :: struct {
     handle: vk.ShaderEXT,
     current_workgroup_size: [3]u32,
     is_compute: bool,
@@ -208,7 +208,7 @@ Command_Buffer_Info :: struct {
 }
 
 @(private="file")
-Descriptor_Heap_Info :: struct
+Descriptor_Heap_Impl_Info :: struct
 {
     desc_pool: vk.DescriptorPool,
     textures: vk.DescriptorSet,
@@ -1442,7 +1442,7 @@ _mem_free_raw :: proc(addr: gpuptr, loc := #caller_location)
 }
 
 // Textures
-_texture_size_and_align :: proc(desc: Texture_Desc, loc := #caller_location) -> (size: u64, align: u64)
+_texture_size_and_align :: proc(desc: Texture_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
     desc_clean := texture_desc_cleanup(desc)
 
@@ -1463,7 +1463,7 @@ _texture_size_and_align :: proc(desc: Texture_Desc, loc := #caller_location) -> 
     return u64(mem_requirements.size), u64(mem_requirements.alignment)
 }
 
-_texture_create :: proc(desc: Texture_Desc, storage: gpuptr, queue: Queue = .Main, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Texture
+_texture_create :: proc(desc: Texture_Info, storage: gpuptr, queue: Queue = .Main, signal_sem: Semaphore = {}, signal_value: u64 = 0, name := "", loc := #caller_location) -> Texture
 {
     if ctx.validation
     {
@@ -1517,7 +1517,7 @@ _texture_create :: proc(desc: Texture_Desc, storage: gpuptr, queue: Queue = .Mai
 
     vk_set_debug_name(name, u64(image), .IMAGE)
 
-    tex_info := Texture_Info { handle = image, owns_image = true }
+    tex_info := Texture_Impl_Info { handle = image, owns_image = true }
     return Texture {
         type = desc_clean.type,
         dimensions = desc_clean.dimensions,
@@ -1588,11 +1588,11 @@ get_or_add_sampler :: proc(info: vk.SamplerCreateInfo) -> vk.Sampler
     sampler: vk.Sampler
     sampler_ci := info
     vk_check(vk.CreateSampler(ctx.device, &sampler_ci, nil, &sampler))
-    append(&tls.samplers, Sampler_Info { info, sampler })
+    append(&tls.samplers, Sampler_Impl_Info { info, sampler })
     return sampler
 }
 
-_texture_descriptor :: proc(texture: Texture, view_desc: Texture_View_Desc, loc := #caller_location) -> Texture_Descriptor
+_texture_descriptor :: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor
 {
     if ctx.validation
     {
@@ -1624,7 +1624,7 @@ _texture_descriptor :: proc(texture: Texture, view_desc: Texture_View_Desc, loc 
     return { transmute(u64) texture.handle, cast(u64) view }
 }
 
-_texture_rw_descriptor :: proc(texture: Texture, view_desc: Texture_View_Desc, loc := #caller_location) -> Texture_Descriptor
+_texture_rw_descriptor :: proc(texture: Texture, view_desc: Texture_View_Info, loc := #caller_location) -> Texture_Descriptor
 {
     if ctx.validation
     {
@@ -1656,7 +1656,7 @@ _texture_rw_descriptor :: proc(texture: Texture, view_desc: Texture_View_Desc, l
     return { transmute(u64) texture.handle, cast(u64) view }
 }
 
-_sampler_descriptor :: proc(sampler_desc: Sampler_Desc, loc := #caller_location) -> Sampler_Descriptor
+_sampler_descriptor :: proc(sampler_desc: Sampler_Info, loc := #caller_location) -> Sampler_Descriptor
 {
     if sampler_desc.max_anisotropy != 0.0 {
         ensure(
@@ -1741,7 +1741,7 @@ _desc_heap_create :: proc(texture_count: u32 = 65536,
     desc_sets: [4]vk.DescriptorSet
     vk_check(vk.AllocateDescriptorSets(ctx.device, &alloc_info, &desc_sets[0]))
 
-    desc_heap_info := Descriptor_Heap_Info {
+    desc_heap_info := Descriptor_Heap_Impl_Info {
         textures = desc_sets[0],
         textures_rw = desc_sets[1],
         samplers = desc_sets[2],
@@ -2035,7 +2035,7 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
 
     vk_set_debug_name(name, u64(vk_shader), .SHADER_EXT)
 
-    shader: Shader_Info
+    shader: Shader_Impl_Info
     shader.handle = vk_shader
     shader.current_workgroup_size = { group_size_x, group_size_y, group_size_z }
     shader.is_compute = is_compute
@@ -2043,16 +2043,16 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
     return pool_add(&ctx.shaders, shader, { created_at = loc, name = name })
 }
 
-_shader_create :: proc(code: []u32, type: Shader_Type_Graphics, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
+_shader_create :: proc(code: []u32, type: Shader_Type_Graphics, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
 {
     vk_stage := to_vk_shader_stage(type)
-    return _shader_create_internal(code, false, vk_stage, entry_point_name, name = name, spec_constants = spec_constants, loc = loc)
+    return _shader_create_internal(code, false, vk_stage, entry, name = name, spec_constants = spec_constants, loc = loc)
 }
 
-_shader_create_compute :: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry_point_name := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
+_shader_create_compute :: proc(code: []u32, group_size_x: u32, group_size_y: u32 = 1, group_size_z: u32 = 1, entry := "main", name := "", spec_constants: []Spec_Constant = {}, loc := #caller_location) -> Shader
 {
     // TODO: Add validation for spec constants conflicting with backend allocated spec constants for workgroup size.
-    return _shader_create_internal(code, true, { .COMPUTE }, entry_point_name, group_size_x, group_size_y, group_size_z, name = name, spec_constants = spec_constants, loc = loc)
+    return _shader_create_internal(code, true, { .COMPUTE }, entry, group_size_x, group_size_y, group_size_z, name = name, spec_constants = spec_constants, loc = loc)
 }
 
 _shader_destroy :: proc(shader: Shader, loc := #caller_location)
@@ -2143,12 +2143,12 @@ _semaphore_destroy :: proc(sem: Semaphore, loc := #caller_location)
 }
 
 // Raytracing
-_blas_size_and_align :: proc(desc: BLAS_Desc, loc := #caller_location) -> (size: u64, align: u64)
+_blas_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
     return u64(get_vk_blas_size_info(desc).accelerationStructureSize), 16
 }
 
-_blas_create :: proc(desc: BLAS_Desc, storage: gpuptr, name := "", loc := #caller_location) -> BVH
+_blas_create :: proc(desc: BLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH
 {
     if ctx.validation
     {
@@ -2175,7 +2175,7 @@ _blas_create :: proc(desc: BLAS_Desc, storage: gpuptr, name := "", loc := #calle
     new_desc := desc
     cloned_shapes := slice.clone_to_dynamic(new_desc.shapes)
     new_desc.shapes = cloned_shapes[:]
-    bvh_info := BVH_Info {
+    bvh_info := BVH_Impl_Info {
         handle = bvh_handle,
         mem = storage.ptr,
         is_blas = true,
@@ -2185,17 +2185,26 @@ _blas_create :: proc(desc: BLAS_Desc, storage: gpuptr, name := "", loc := #calle
     return pool_add(&ctx.bvhs, bvh_info, { created_at = loc, name = name })
 }
 
-_blas_build_scratch_buffer_size_and_align :: proc(desc: BLAS_Desc, loc := #caller_location) -> (size: u64, align: u64)
+_blas_build_scratch_buffer_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
     return u64(get_vk_blas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
-_tlas_size_and_align :: proc(desc: TLAS_Desc, loc := #caller_location) -> (size: u64, align: u64)
+_blas_update_scratch_buffer_size_and_align :: proc(desc: BLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
+{
+    if ctx.validation && .Update not_in desc.caps {
+        log.errorf("BLAS_Info must include {{.Update}} to query update scratch size.", location = loc)
+        return 0, 1
+    }
+    return u64(get_vk_blas_size_info(desc).updateScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+}
+
+_tlas_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
     return u64(get_vk_tlas_size_info(desc).accelerationStructureSize), 1
 }
 
-_tlas_create :: proc(desc: TLAS_Desc, storage: gpuptr, name := "", loc := #caller_location) -> BVH
+_tlas_create :: proc(desc: TLAS_Info, storage: gpuptr, name := "", loc := #caller_location) -> BVH
 {
     if ctx.validation
     {
@@ -2219,7 +2228,7 @@ _tlas_create :: proc(desc: TLAS_Desc, storage: gpuptr, name := "", loc := #calle
 
     vk_set_debug_name(name, u64(bvh_handle), .ACCELERATION_STRUCTURE_KHR)
 
-    bvh_info := BVH_Info {
+    bvh_info := BVH_Impl_Info {
         handle = bvh_handle,
         mem = storage.ptr,
         is_blas = false,
@@ -2228,9 +2237,18 @@ _tlas_create :: proc(desc: TLAS_Desc, storage: gpuptr, name := "", loc := #calle
     return pool_add(&ctx.bvhs, bvh_info, { created_at = loc, name = name })
 }
 
-_tlas_build_scratch_buffer_size_and_align :: proc(desc: TLAS_Desc, loc := #caller_location) -> (size: u64, align: u64)
+_tlas_build_scratch_buffer_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
 {
     return u64(get_vk_tlas_size_info(desc).buildScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
+}
+
+_tlas_update_scratch_buffer_size_and_align :: proc(desc: TLAS_Info, loc := #caller_location) -> (size: u64, align: u64)
+{
+    if ctx.validation && .Update not_in desc.caps {
+        log.errorf("TLAS_Info must include {{.Update}} to query update scratch size.", location = loc)
+        return 0, 1
+    }
+    return u64(get_vk_tlas_size_info(desc).updateScratchSize), u64(ctx.physical_properties.bvh_props.minAccelerationStructureScratchOffsetAlignment)
 }
 
 _bvh_root_ptr :: proc(bvh: BVH, loc := #caller_location) -> rawptr
@@ -2265,7 +2283,7 @@ _bvh_destroy :: proc(bvh: BVH, loc := #caller_location)
 }
 
 @(private="file")
-get_vk_blas_size_info :: proc(desc: BLAS_Desc) -> vk.AccelerationStructureBuildSizesInfoKHR
+get_vk_blas_size_info :: proc(desc: BLAS_Info) -> vk.AccelerationStructureBuildSizesInfoKHR
 {
     scratch, _ := acquire_scratch()
 
@@ -2274,8 +2292,8 @@ get_vk_blas_size_info :: proc(desc: BLAS_Desc) -> vk.AccelerationStructureBuildS
     {
         switch s in shape
         {
-            case BVH_Mesh_Desc: primitive_counts[i] = s.tri_count
-            case BVH_AABB_Desc: primitive_counts[i] = s.aabb_count
+            case BVH_Mesh_Info: primitive_counts[i] = s.tri_count
+            case BVH_AABB_Info: primitive_counts[i] = s.aabb_count
         }
     }
 
@@ -2287,7 +2305,7 @@ get_vk_blas_size_info :: proc(desc: BLAS_Desc) -> vk.AccelerationStructureBuildS
 }
 
 @(private="file")
-get_vk_tlas_size_info :: proc(desc: TLAS_Desc) -> vk.AccelerationStructureBuildSizesInfoKHR
+get_vk_tlas_size_info :: proc(desc: TLAS_Info) -> vk.AccelerationStructureBuildSizesInfoKHR
 {
     scratch, _ := acquire_scratch()
 
@@ -2868,7 +2886,7 @@ _cmd_dispatch_indirect_raw :: proc(cmd_buf: Command_Buffer, compute_data, argume
     vk.CmdDispatchIndirect(vk_cmd_buf, arguments_buf, vk.DeviceSize(arguments_offset))
 }
 
-_cmd_begin_render_pass :: proc(cmd_buf: Command_Buffer, desc: Render_Pass_Desc, loc := #caller_location)
+_cmd_begin_render_pass :: proc(cmd_buf: Command_Buffer, desc: Render_Pass_Info, loc := #caller_location)
 {
     if ctx.validation
     {
@@ -3167,12 +3185,27 @@ _cmd_draw_indexed_indirect_multi_raw :: proc(cmd_buf: Command_Buffer, vertex_dat
 
 _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
 {
+    cmd_build_or_update_blas(cmd_buf, bvh, scratch_storage, shapes, .BUILD, loc)
+}
+
+_cmd_update_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape, loc := #caller_location)
+{
+    cmd_build_or_update_blas(cmd_buf, bvh, scratch_storage, shapes, .UPDATE, loc)
+}
+
+@(private="file")
+cmd_build_or_update_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpuptr, shapes: []BVH_Shape,
+                                 mode: vk.BuildAccelerationStructureModeKHR, loc := #caller_location)
+{
     if ctx.validation
     {
         ok := true
         ok &= pool_check(&ctx.command_buffers, cmd_buf, "cmd_buf", loc)
         ok &= check_ptr(scratch_storage, "scratch_storage", loc)
         ok &= check_bvh_must_be_blas(bvh, "bvh", loc)
+        if mode == .UPDATE {
+            ok &= check_bvh_allows_update(bvh, "bvh", loc)
+        }
         if !ok do return
     }
 
@@ -3201,7 +3234,11 @@ _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpup
     scratch, _ := acquire_scratch()
 
     build_info := to_vk_blas_desc(bvh_info.blas_desc, arena = scratch)
+    build_info.mode = mode
     build_info.dstAccelerationStructure = bvh_info.handle
+    if mode == .UPDATE {
+        build_info.srcAccelerationStructure = bvh_info.handle
+    }
     build_info.scratchData.deviceAddress = transmute(vk.DeviceAddress) scratch_storage.ptr
     assert(u32(len(shapes)) == build_info.geometryCount)
 
@@ -3224,7 +3261,7 @@ _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpup
             {
                 geom.geometry.triangles.vertexData.deviceAddress = transmute(vk.DeviceAddress) s.verts
                 geom.geometry.triangles.indexData.deviceAddress = transmute(vk.DeviceAddress) s.indices
-                range_infos[i].primitiveCount = bvh_info.blas_desc.shapes[i].(BVH_Mesh_Desc).tri_count
+                range_infos[i].primitiveCount = bvh_info.blas_desc.shapes[i].(BVH_Mesh_Info).tri_count
             }
             case BVH_AABBs:
             {
@@ -3241,6 +3278,18 @@ _cmd_build_blas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage: gpup
 
 _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr, loc := #caller_location)
 {
+    cmd_build_or_update_tlas(cmd_buf, bvh, scratch_storage, instances, .BUILD, loc)
+}
+
+_cmd_update_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr, loc := #caller_location)
+{
+    cmd_build_or_update_tlas(cmd_buf, bvh, scratch_storage, instances, .UPDATE, loc)
+}
+
+@(private="file")
+cmd_build_or_update_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, instances: gpuptr,
+                                 mode: vk.BuildAccelerationStructureModeKHR, loc := #caller_location)
+{
     if ctx.validation
     {
         ok := true
@@ -3248,6 +3297,9 @@ _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, inst
         ok &= check_ptr(scratch_storage, "scratch_storage", loc)
         ok &= check_ptr(instances, "instances", loc)
         ok &= check_bvh_must_be_tlas(bvh, "bvh", loc)
+        if mode == .UPDATE {
+            ok &= check_bvh_allows_update(bvh, "bvh", loc)
+        }
         if !ok do return
     }
 
@@ -3258,7 +3310,11 @@ _cmd_build_tlas :: proc(cmd_buf: Command_Buffer, bvh: BVH, scratch_storage, inst
     scratch, _ := acquire_scratch()
 
     build_info := to_vk_tlas_desc(bvh_info.tlas_desc, arena = scratch)
+    build_info.mode = mode
     build_info.dstAccelerationStructure = bvh_info.handle
+    if mode == .UPDATE {
+        build_info.srcAccelerationStructure = bvh_info.handle
+    }
     build_info.scratchData.deviceAddress = transmute(vk.DeviceAddress) scratch_storage.ptr
     assert(build_info.geometryCount == 1)
 
@@ -3429,7 +3485,7 @@ create_swapchain :: proc(swapchain_desc: Swapchain_Desc, prev_swapchain: vk.Swap
         }
         vk_check(vk.CreateImageView(ctx.device, &image_view_ci, nil, &res.image_views[i]))
 
-        tex_info := Texture_Info { handle = image }
+        tex_info := Texture_Impl_Info { handle = image }
         append(&tex_info.views, Image_View_Info { info = image_view_ci, view = res.image_views[i] })
         res.texture_handles[i] = pool_add(&ctx.textures, tex_info, {})
     }
@@ -3811,7 +3867,7 @@ _vk_get_semaphore :: proc(semaphore: Semaphore) -> vk.Semaphore
     return pool_get(&ctx.semaphores, semaphore)
 }
 
-_vk_wrap_image :: proc(image: vk.Image, desc: Texture_Desc, name := "", loc := #caller_location) -> Texture
+_vk_wrap_image :: proc(image: vk.Image, desc: Texture_Info, name := "", loc := #caller_location) -> Texture
 {
     desc_clean := texture_desc_cleanup(desc)
 
@@ -3819,7 +3875,7 @@ _vk_wrap_image :: proc(image: vk.Image, desc: Texture_Desc, name := "", loc := #
         ensure(image != {}, "Cannot wrap a nil VkImage.")
     }
 
-    tex_info := Texture_Info {
+    tex_info := Texture_Impl_Info {
         handle = image,
         owns_image = false,
     }
@@ -4085,6 +4141,19 @@ check_bvh_must_be_blas :: proc(bvh: BVH, name: string, loc: runtime.Source_Code_
     bvh_info := pool_get(&ctx.bvhs, bvh)
     if !bvh_info.is_blas {
         log.errorf("'%v' must be a BLAS.", name, location = loc)
+        return false
+    }
+
+    return true
+}
+
+@(private="file")
+check_bvh_allows_update :: proc(bvh: BVH, name: string, loc: runtime.Source_Code_Location) -> bool
+{
+    bvh_info := pool_get(&ctx.bvhs, bvh)
+    caps := bvh_info.blas_desc.caps if bvh_info.is_blas else bvh_info.tlas_desc.caps
+    if .Update not_in caps {
+        log.errorf("'%v' was not created with {{.Update}}; cannot update in-place.", name, location = loc)
         return false
     }
 
