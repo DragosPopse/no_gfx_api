@@ -1542,6 +1542,7 @@ emit_fmag_asm :: proc(entry: ^Entry, allocator := context.allocator) -> (text: s
 			delete(([^]u8)(r.fmag.stream.data)[:int(r.fmag.stream.size)], allocator)
 		}
 		fmag_free_notes(notes, allocator)
+		delete(r.fmag_asm, allocator)
 	}
 	text = strings.clone(r.fmag_asm, allocator)
 	ok = true

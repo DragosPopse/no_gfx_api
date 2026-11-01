@@ -33,7 +33,6 @@ add :: proc "fmag"(a: f32, b: f32) -> f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "add")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
 	regs[0] = 2
@@ -60,7 +59,6 @@ k :: proc "fmag"(a: f32, b: f32, v: [3]f32, s: f32) -> [3]f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "k")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 6))
 	defer delete(regs)
 	regs[0] = 2
@@ -123,7 +121,6 @@ k :: proc "fmag"(x: f32) -> f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "k")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 1))
 	defer delete(regs)
 	regs[0] = -3
@@ -150,7 +147,6 @@ k :: proc "fmag"(x: f32) -> f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "k")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 1))
 	defer delete(regs)
 	regs[0] = 4
@@ -171,7 +167,6 @@ k :: proc "fmag"(c: f32, a: [3]f32) -> [3]f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "k")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 4))
 	defer delete(regs)
 	regs[0] = 1
@@ -207,7 +202,6 @@ k :: proc "fmag"(x: f32) -> f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "k")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 1))
 	defer delete(regs)
 	regs[0] = -4
@@ -224,7 +218,6 @@ shade :: proc "fmag"(a: [3]f32, b: [3]f32, t: f32) -> [3]f32 {
 `
 	prog, ok := fmag_test_compile(t, src, "shade")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	regs := make([]f32, max(int(prog.header.regs), 7))
 	defer delete(regs)
 	regs[0] = 0
@@ -271,7 +264,6 @@ shade :: proc "fmag"(
 `
 	prog, ok := fmag_test_compile(t, src, "shade")
 	if !ok do return
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.args == 12)
 	testing.expect(t, prog.header.rets == 3)
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
@@ -353,7 +345,6 @@ fmag_expect_unary_f32 :: proc(t: ^testing.T, src: string, x, want: f32, max_ulp:
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	if !testing.expectf(t, prog.header.regs <= FMAG_REGS, "regs=%v > %v", prog.header.regs, FMAG_REGS, loc = loc) {
 		return
 	}
@@ -392,7 +383,6 @@ k :: proc "fmag"(v: [2]f32) -> [2]f32 {
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
@@ -426,7 +416,6 @@ k :: proc "fmag"(v: [2]f32) -> [2]f32 {
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
@@ -466,7 +455,6 @@ k :: proc "fmag"(v: [2]f32) -> [2]f32 {
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
@@ -500,7 +488,6 @@ k :: proc "fmag"(v: [2]f32) -> [2]f32 {
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
@@ -523,7 +510,6 @@ k :: proc "fmag"(x: f32) -> [2]f32 {
 	if !ok {
 		return
 	}
-	defer delete(([^]u8)(prog.stream.data)[:int(prog.stream.size)])
 	testing.expect(t, prog.header.regs <= FMAG_REGS)
 	regs := make([]f32, max(int(prog.header.regs), 2))
 	defer delete(regs)
