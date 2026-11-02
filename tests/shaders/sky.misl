@@ -1,0 +1,42 @@
+DIR :: #inout(f32x3, 0)
+
+Vert_Data :: struct {
+	positions:     [^]f32x3,
+	world_to_view: f32x4x4,
+	view_to_proj:  f32x4x4,
+}
+
+VS_Out :: struct {
+	pos: f32x4 | SV_Position,
+	dir: f32x3 | DIR,
+}
+
+vert :: proc "vertex"(
+	vert_id: u32 | SV_Vertex,
+	data: ^Vert_Data | SV_Data,
+) -> (out: VS_Out) {
+	p := data.positions[vert_id]
+	// Upper 3x3 only: drop the view translation, same as mat3(world_to_view) * p.
+	clip_pos := f32x4((data.world_to_view * f32x4(p, 0)).xyz, 1)
+	clip_pos = data.view_to_proj * clip_pos
+	clip_pos.y = -clip_pos.y
+
+	out.pos = clip_pos
+	out.dir = normalize(p)
+	return out
+}
+
+Frag_Data :: struct {
+	sky_texture: t32_cube,
+	sky_sampler: s32,
+}
+
+frag :: proc "fragment"(
+	input: VS_Out,
+	data: ^Frag_Data | SV_Data,
+) -> (out: f32x4 | SV_Target) {
+	frag_dir := normalize(input.dir)
+	sky_color := sample(data.sky_texture, data.sky_sampler, frag_dir).rgb
+	out = f32x4(sky_color, 1)
+	return out
+}

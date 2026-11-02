@@ -1,0 +1,42 @@
+COLOR :: #inout(f32x4, 0)
+
+Vertex :: struct {
+	pos: f32x3,
+}
+
+Data :: struct {
+	verts: [^]Vertex,
+}
+
+// Layout matches Odin `using cmd: gpu.Draw_Indexed_Indirect_Command`.
+Indirect_Data :: struct {
+	index_count:    u32,
+	instance_count: u32,
+	first_index:    u32,
+	vertex_offset:  i32,
+	first_instance: u32,
+	color:          f32x3,
+	pos:            f32x3,
+	size:           f32,
+}
+
+VS_Out :: struct {
+	pos:   f32x4 | SV_Position,
+	color: f32x4 | COLOR,
+}
+
+vert :: proc "vertex"(
+	vert_id: u32 | SV_Vertex,
+	data: ^Data | SV_Data,
+	indirect_data: ^Indirect_Data | SV_Indirect_Data
+) -> (out: VS_Out) {
+	// Vertices are shared across draws. Scale and translation come from the indirect args.
+	out.pos = f32x4(data.verts[vert_id].pos * indirect_data.size + indirect_data.pos, 1)
+	out.color = f32x4(indirect_data.color, 1)
+	return out
+}
+
+frag :: proc "fragment"(input: VS_Out) -> (out: f32x4 | SV_Target) {
+	out = input.color
+	return out
+}

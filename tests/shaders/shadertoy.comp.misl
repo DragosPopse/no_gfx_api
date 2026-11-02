@@ -1,0 +1,64 @@
+// Shader "Clearly a bug" by Glow on https://www.shadertoy.com/view/33cGDj
+
+Data :: struct {
+	output_texture_id: rw32_2d,
+	time:              f32,
+}
+
+mat2_from_vec4 :: proc(v: f32x4) -> f32x4 {
+	return v
+}
+
+// m is column-major [a c; b d], stored as (a, b, c, d).
+mat2_mul :: proc(m: f32x4, v: f32x2) -> f32x2 {
+	return f32x2(m.x * v.x + m.z * v.y, m.y * v.x + m.w * v.y)
+}
+
+raymarch :: proc(data: ^Data, gid: f32x3) -> f32x4 {
+	C := gid.xy
+	d: f32
+	z := fract(dot(C, sin(C))) - 0.5
+	o := f32x4(0, 0, 0, 0)
+	p: f32x4
+	sz := dim(data.output_texture_id)
+	r := f32x2(f32(sz.x), f32(sz.y))
+	O: f32x4
+
+	// i runs 1..<77. The original steps z in the for-loop increment.
+	for i := 1; i < 77; i += 1 {
+		// .1 * time, not .1 * i. The original Shadertoy uses iTime.
+		p = f32x4(z * normalize(f32x3(C - 0.5 * r, r.y)), 0.1 * data.time)
+		p = f32x4(p.x, p.y, p.z + data.time, p.w)
+		O = p
+
+		rot1 := mat2_from_vec4(cos(2 + O.z + f32x4(0, 11, 33, 0)))
+		p_xy := mat2_mul(rot1, f32x2(p.x, p.y))
+		p = f32x4(p_xy.x, p_xy.y, p.z, p.w)
+
+		// The second rotation was a bug in the original and is what makes the image.
+		rot2 := mat2_from_vec4(cos(O + f32x4(0, 11, 33, 0)))
+		p_xy = mat2_mul(rot2, f32x2(p.x, p.y))
+		p = f32x4(p_xy.x, p_xy.y, p.z, p.w)
+
+		numerator := 1 + sin(0.5 * O.z + mag(p - O) + f32x4(0, 4, 3, 6))
+		denominator := 0.5 + 2 * dot(O.xy, O.xy)
+		O = numerator / denominator
+
+		p = abs(fract(p) - 0.5)
+		d = abs(min(mag(p.xy) - 0.125, min(p.x, p.y) + 0.001)) + 0.001
+		o += O.w / d * O
+		z += 0.6 * d
+	}
+	return tanh(o / 20000)
+}
+
+@(size = {8, 8})
+main :: proc "compute"(
+	data: ^Data | SV_Data,
+	gid: [3]u32 | SV_Global_Thread,
+) {
+	sz := dim(data.output_texture_id)
+	if gid.x >= u32(sz.x) || gid.y >= u32(sz.y) do return
+	color := raymarch(data, f32x3(f32(gid.x), f32(gid.y), f32(gid.z)))
+	store(data.output_texture_id, i32x2(i32(gid.x), i32(gid.y)), color)
+}

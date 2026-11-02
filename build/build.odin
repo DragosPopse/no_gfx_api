@@ -57,7 +57,8 @@ cmd_default :: proc() -> bool
     return res
 }
 
-cmd_default_misl :: proc() -> bool {
+cmd_default_misl :: proc() -> bool
+{
 	cmd_check_gpu() or_return
     res := true
     res &= cmd_compiler_mislc()
@@ -171,7 +172,8 @@ cmd_check_tests :: proc() -> bool
     return res
 }
 
-cmd_compiler_mislc :: proc() -> bool {
+cmd_compiler_mislc :: proc() -> bool
+{
     res := true
     res &= run_task("odin", "build", "misl/tools/mislc", "-debug", with_exe_ext("-out=build/mislc"))
     return res
@@ -202,16 +204,16 @@ cmd_shaders_slang :: proc() -> bool
 
 cmd_run_compiler_tests :: proc() -> bool
 {
-    cmd_compiler() or_return
+    cmd_compiler_mislc() or_return
     res := true
 
     dir := "tests"
-    shaders_nosl, shaders_slang, _ := get_shaders_in_dir(dir)
-    for shader in shaders_nosl
+    _, _, shaders_misl := get_shaders_in_dir(dir)
+    for shader in shaders_misl
     {
-        dir, _ := os.split_path(shader)
-        out_flag := fmt.tprintf("-out:%v/%v.spv",  dir, os.stem(shader))
-        compile_success := run_task(with_exe_ext("./build/gpu_compiler"), shader, out_flag, silent = true)
+        shader_dir, _ := os.split_path(shader)
+        out_flag := fmt.tprintf("-out:%v", shader_dir)
+        compile_success := run_task(with_exe_ext("./build/mislc"), shader, out_flag, "-target:spirv", "-quiet", silent = true)
         if compile_success {
             fmt.printfln("%v - Ok.", shader)
         } else {
@@ -384,7 +386,7 @@ get_shaders_in_dir :: proc(path: string) -> (shaders_nosl: [dynamic]string, shad
                 {
                     append(&shaders_slang, strings.clone(shader_info.fullpath))
                 }
-				else if ext == ".misl" 
+				else if ext == ".misl"
 				{
 					append(&shaders_misl, strings.clone(shader_info.fullpath))
 				}
@@ -447,7 +449,7 @@ cmd_build_examples_parallel :: proc(build_odin := true, build_shaders_nosl := tr
         if res && info.build_odin {
             res &= cmd_build_example(task.example)
         }
-		
+
         if !res {
             intr.atomic_store(task.success, false)
         }
