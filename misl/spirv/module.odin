@@ -40,7 +40,6 @@ Function :: struct {
 	param_types: [dynamic]Id,
 	blocks:      [dynamic]Block,
 	variables:   [dynamic]Word, // OpVariable in the first block
-	current:     int,           // index into blocks; -1 = none
 }
 
 Module :: struct {
@@ -68,7 +67,8 @@ Module :: struct {
 	types:       [dynamic]Word,
 
 	functions: [dynamic]Function,
-	fn_i:      int, // current function index; -1 = none
+	cur_fn:    ^Function,
+	cur_block: ^Block,
 
 	type_map:   map[string]Id,
 	const_map:  map[string]Id,
@@ -87,7 +87,6 @@ module_create :: proc(allocator := context.allocator) -> Module {
 	m.generator = GENERATOR_MISL
 	m.addressing = .Logical
 	m.memory = .GLSL450
-	m.fn_i = -1
 	m.emit_names = true
 	context.allocator = allocator
 	m.caps = make([dynamic]Capability, allocator)
@@ -114,42 +113,42 @@ alloc_id :: proc(m: ^Module) -> Id {
 	return Id(m.next_id)
 }
 
-inst_header :: proc(op: Op, word_count: u32) -> Word {
-	return Word(u32(op) | (word_count << 16))
+// Header, then prefix. tail is how many operand words the caller appends next.
+append_inst_start :: proc(dst: ^[dynamic]Word, op: Op, tail: int, prefix: ..Word) {
+	n := u32(1 + len(prefix) + tail)
+	append(dst, Word(u32(op) | (n << 16)))
+	append(dst, ..prefix)
 }
 
-string_words :: proc(s: string, allocator := context.temp_allocator) -> []Word {
-	n_bytes := len(s) + 1
-	n_words := (n_bytes + 3) / 4
-	out := make([]Word, n_words, allocator)
-	bytes := slice.reinterpret([]u8, out)
+string_word_count :: #force_inline proc(s: string) -> int {
+	return (len(s) + 4) / 4 // NUL plus pad to a whole word
+}
+
+append_literal_string :: proc(dst: ^[dynamic]Word, s: string) {
+	n := string_word_count(s)
+	base := len(dst)
+	reserve(dst, base + n)
+	for _ in 0 ..< n {
+		append(dst, 0)
+	}
+	bytes := slice.reinterpret([]u8, dst[base:])
 	copy(bytes, transmute([]u8)s)
-	return out
+}
+
+append_ids :: proc(dst: ^[dynamic]Word, ids: []Id) {
+	reserve(dst, len(dst) + len(ids))
+	for id in ids {
+		append(dst, Word(id))
+	}
 }
 
 append_inst :: proc(dst: ^[dynamic]Word, op: Op, operands: []Word) {
-	n := u32(1 + len(operands))
-	append(dst, inst_header(op, n))
+	append_inst_start(dst, op, len(operands))
 	append(dst, ..operands)
 }
 
 append_inst_lit :: proc(dst: ^[dynamic]Word, op: Op, operands: ..Word) {
 	append_inst(dst, op, operands)
-}
-
-current_fn :: proc(m: ^Module) -> ^Function {
-	if m.fn_i < 0 || m.fn_i >= len(m.functions) {
-		return nil
-	}
-	return &m.functions[m.fn_i]
-}
-
-current_block :: proc(m: ^Module) -> ^Block {
-	fn := current_fn(m)
-	if fn == nil || fn.current < 0 || fn.current >= len(fn.blocks) {
-		return nil
-	}
-	return &fn.blocks[fn.current]
 }
 
 emit_types :: proc(m: ^Module, op: Op, operands: ..Word) {
@@ -165,7 +164,7 @@ emit_deco :: proc(m: ^Module, op: Op, operands: ..Word) {
 }
 
 emit_fn :: proc(m: ^Module, op: Op, operands: []Word) {
-	b := current_block(m)
+	b := m.cur_block
 	assert(b != nil, "spirv: emit outside a block")
 	assert(!b.terminated || op == .Label, "spirv: emit into a terminated block")
 	append_inst(&b.insts, op, operands)
@@ -177,11 +176,11 @@ emit_fn_lit :: proc(m: ^Module, op: Op, operands: ..Word) {
 
 emit_typed :: proc(m: ^Module, op: Op, result_type: Id, operands: []Word) -> Id {
 	rid := alloc_id(m)
-	ops := make([]Word, 2 + len(operands), context.temp_allocator)
-	ops[0] = Word(result_type)
-	ops[1] = Word(rid)
-	copy(ops[2:], operands)
-	emit_fn(m, op, ops)
+	b := m.cur_block
+	assert(b != nil, "spirv: emit outside a block")
+	assert(!b.terminated || op == .Label, "spirv: emit into a terminated block")
+	append_inst_start(&b.insts, op, len(operands), Word(result_type), Word(rid))
+	append(&b.insts, ..operands)
 	return rid
 }
 
@@ -258,23 +257,16 @@ name :: proc(m: ^Module, target: Id, n: string) {
 	if !m.emit_names || target == NONE || n == "" {
 		return
 	}
-	sw := string_words(n)
-	ops := make([]Word, 1 + len(sw), context.temp_allocator)
-	ops[0] = Word(target)
-	copy(ops[1:], sw)
-	append_inst(&m.debug, .Name, ops)
+	append_inst_start(&m.debug, .Name, string_word_count(n), Word(target))
+	append_literal_string(&m.debug, n)
 }
 
 member_name :: proc(m: ^Module, struct_id: Id, member: u32, n: string) {
 	if !m.emit_names || struct_id == NONE || n == "" {
 		return
 	}
-	sw := string_words(n)
-	ops := make([]Word, 2 + len(sw), context.temp_allocator)
-	ops[0] = Word(struct_id)
-	ops[1] = member
-	copy(ops[2:], sw)
-	append_inst(&m.debug, .MemberName, ops)
+	append_inst_start(&m.debug, .MemberName, string_word_count(n), Word(struct_id), member)
+	append_literal_string(&m.debug, n)
 }
 
 op_string :: proc(m: ^Module, s: string) -> Id {
@@ -284,38 +276,24 @@ op_string :: proc(m: ^Module, s: string) -> Id {
 	id := alloc_id(m)
 	cloned := strings.clone(s, m.allocator)
 	m.string_ids[cloned] = id
-	sw := string_words(s)
-	ops := make([]Word, 1 + len(sw), context.temp_allocator)
-	ops[0] = Word(id)
-	copy(ops[1:], sw)
-	append_inst(&m.debug_src, .String_, ops)
+	append_inst_start(&m.debug_src, .String_, string_word_count(s), Word(id))
+	append_literal_string(&m.debug_src, s)
 	return id
 }
 
 decorate :: proc(m: ^Module, target: Id, dec: Decoration, extra: ..u32) {
-	ops := make([]Word, 2 + len(extra), context.temp_allocator)
-	ops[0] = Word(target)
-	ops[1] = Word(dec)
-	copy(ops[2:], extra)
-	append_inst(&m.decorations, .Decorate, ops)
+	append_inst_start(&m.decorations, .Decorate, len(extra), Word(target), Word(dec))
+	append(&m.decorations, ..extra)
 }
 
 member_decorate :: proc(m: ^Module, struct_id: Id, member: u32, dec: Decoration, extra: ..u32) {
-	ops := make([]Word, 3 + len(extra), context.temp_allocator)
-	ops[0] = Word(struct_id)
-	ops[1] = member
-	ops[2] = Word(dec)
-	copy(ops[3:], extra)
-	append_inst(&m.decorations, .MemberDecorate, ops)
+	append_inst_start(&m.decorations, .MemberDecorate, len(extra), Word(struct_id), member, Word(dec))
+	append(&m.decorations, ..extra)
 }
 
 decorate_string :: proc(m: ^Module, target: Id, dec: Decoration, s: string) {
-	sw := string_words(s)
-	ops := make([]Word, 2 + len(sw), context.temp_allocator)
-	ops[0] = Word(target)
-	ops[1] = Word(dec)
-	copy(ops[2:], sw)
-	append_inst(&m.decorations, .Decorate, ops)
+	append_inst_start(&m.decorations, .Decorate, string_word_count(s), Word(target), Word(dec))
+	append_literal_string(&m.decorations, s)
 }
 
 global_var :: proc(m: ^Module, ty_ptr: Id, sc: Storage_Class, init: Id = NONE) -> Id {
@@ -340,8 +318,7 @@ put_key :: proc(m: ^Module, key: string, id: Id, table: ^map[string]Id) {
 }
 
 is_terminated :: proc(m: ^Module) -> bool {
-	b := current_block(m)
-	return b != nil && b.terminated
+	return m.cur_block.terminated
 }
 
 branch_if_open :: proc(m: ^Module, target: Id) {
@@ -359,13 +336,8 @@ source :: proc(m: ^Module, lang: Source_Language, version: u32, file: Id = NONE,
 		append_inst_lit(&m.debug_src, .Source, Word(lang), version, Word(file))
 		return
 	}
-	sw := string_words(text)
-	ops := make([]Word, 3 + len(sw), context.temp_allocator)
-	ops[0] = Word(lang)
-	ops[1] = version
-	ops[2] = Word(file)
-	copy(ops[3:], sw)
-	append_inst(&m.debug_src, .Source, ops)
+	append_inst_start(&m.debug_src, .Source, string_word_count(text), Word(lang), version, Word(file))
+	append_literal_string(&m.debug_src, text)
 }
 
 line :: proc(m: ^Module, file: Id, line_no, column: u32) {
@@ -382,33 +354,31 @@ fn_begin :: proc(m: ^Module, result_type, fn_type: Id, control := Function_Contr
 	fn.result_type = result_type
 	fn.type_id = fn_type
 	fn.control = control
-	fn.current = -1
 	fn.params = make([dynamic]Id, m.allocator)
 	fn.param_types = make([dynamic]Id, m.allocator)
 	fn.blocks = make([dynamic]Block, m.allocator)
 	fn.variables = make([dynamic]Word, m.allocator)
 	append(&m.functions, fn)
-	m.fn_i = len(m.functions) - 1
+	m.cur_fn = &m.functions[len(m.functions) - 1]
+	m.cur_block = nil
 	return fid
 }
 
 fn_param :: proc(m: ^Module, ty: Id) -> Id {
-	fn := current_fn(m)
-	assert(fn != nil)
+	assert(m.cur_fn != nil)
 	id := alloc_id(m)
-	append(&fn.params, id)
-	append(&fn.param_types, ty)
+	append(&m.cur_fn.params, id)
+	append(&m.cur_fn.param_types, ty)
 	return id
 }
 
 fn_var :: proc(m: ^Module, ty_ptr: Id, sc := Storage_Class.Function, init: Id = NONE) -> Id {
-	fn := current_fn(m)
-	assert(fn != nil)
+	assert(m.cur_fn != nil)
 	id := alloc_id(m)
 	if init != NONE {
-		append_inst_lit(&fn.variables, .Variable, Word(ty_ptr), Word(id), Word(sc), Word(init))
+		append_inst_lit(&m.cur_fn.variables, .Variable, Word(ty_ptr), Word(id), Word(sc), Word(init))
 	} else {
-		append_inst_lit(&fn.variables, .Variable, Word(ty_ptr), Word(id), Word(sc))
+		append_inst_lit(&m.cur_fn.variables, .Variable, Word(ty_ptr), Word(id), Word(sc))
 	}
 	return id
 }
@@ -418,36 +388,18 @@ block_new :: proc(m: ^Module) -> Id {
 }
 
 block_begin :: proc(m: ^Module, id: Id) {
-	fn := current_fn(m)
-	assert(fn != nil)
+	assert(m.cur_fn != nil)
 	b: Block
 	b.id = id
 	b.insts = make([dynamic]Word, m.allocator)
-	append(&fn.blocks, b)
-	fn.current = len(fn.blocks) - 1
-	append_inst_lit(&fn.blocks[fn.current].insts, .Label, Word(id))
-}
-
-block_ensure :: proc(m: ^Module) -> Id {
-	fn := current_fn(m)
-	assert(fn != nil)
-	if fn.current >= 0 {
-		return fn.blocks[fn.current].id
-	}
-	id := block_new(m)
-	block_begin(m, id)
-	return id
-}
-
-mark_terminated :: proc(m: ^Module) {
-	b := current_block(m)
-	if b != nil {
-		b.terminated = true
-	}
+	append(&m.cur_fn.blocks, b)
+	m.cur_block = &m.cur_fn.blocks[len(m.cur_fn.blocks) - 1]
+	append_inst_lit(&m.cur_block.insts, .Label, Word(id))
 }
 
 fn_end :: proc(m: ^Module) {
-	m.fn_i = -1
+	m.cur_fn = nil
+	m.cur_block = nil
 }
 
 assemble :: proc(m: ^Module, allocator := context.allocator) -> []u32 {
@@ -459,35 +411,24 @@ assemble :: proc(m: ^Module, allocator := context.allocator) -> []u32 {
 		append_inst_lit(&out, .Capability, Word(cap))
 	}
 	for ext in m.extensions {
-		sw := string_words(ext)
-		append_inst(&out, .Extension, sw)
+		append_inst_start(&out, .Extension, string_word_count(ext))
+		append_literal_string(&out, ext)
 	}
 	for imp in m.ext_list {
-		sw := string_words(imp.name)
-		ops := make([]Word, 1 + len(sw), context.temp_allocator)
-		ops[0] = Word(imp.id)
-		copy(ops[1:], sw)
-		append_inst(&out, .ExtInstImport, ops)
+		append_inst_start(&out, .ExtInstImport, string_word_count(imp.name), Word(imp.id))
+		append_literal_string(&out, imp.name)
 	}
 	append_inst_lit(&out, .MemoryModel, Word(m.addressing), Word(m.memory))
 
 	for ep in m.entry_points {
-		sw := string_words(ep.name)
-		ops := make([dynamic]Word, context.temp_allocator)
-		append(&ops, Word(ep.model), Word(ep.fn))
-		append(&ops, ..sw)
-		for id in ep.iface {
-			append(&ops, Word(id))
-		}
-		append_inst(&out, .EntryPoint, ops[:])
+		append_inst_start(&out, .EntryPoint, string_word_count(ep.name) + len(ep.iface), Word(ep.model), Word(ep.fn))
+		append_literal_string(&out, ep.name)
+		append_ids(&out, ep.iface[:])
 	}
 	for em in m.exec_modes {
-		ops := make([]Word, 2 + len(em.extra), context.temp_allocator)
-		ops[0] = Word(em.fn)
-		ops[1] = Word(em.mode)
-		copy(ops[2:], em.extra)
 		op := Op.ExecutionModeId if em.use_id else Op.ExecutionMode
-		append_inst(&out, op, ops)
+		append_inst_start(&out, op, len(em.extra), Word(em.fn), Word(em.mode))
+		append(&out, ..em.extra)
 	}
 
 	append(&out, ..m.debug_src[:])
@@ -525,46 +466,21 @@ bytes_from_words :: proc(words: []u32, allocator := context.allocator) -> []u8 {
 	return slice.clone(slice.reinterpret([]u8, words), allocator)
 }
 
-// Empty compute shader used by builder tests: LocalSize 1,1,1 and a void return.
-build_empty_compute :: proc(entry_name := "empty", allocator := context.allocator) -> []u32 {
-	m := module_create(allocator)
-	require_cap(&m, .Shader)
-	set_memory_model(&m, .Logical, .GLSL450)
-	void_t := type_void(&m)
-	fn_ty := type_function(&m, void_t, {})
-	fn := fn_begin(&m, void_t, fn_ty)
-	name(&m, fn, entry_name)
-	ep := entry_point(&m, .GLCompute, fn, entry_name)
-	_ = ep
-	execution_mode(&m, fn, .LocalSize, 1, 1, 1)
-	block_begin(&m, block_new(&m))
-	return_void(&m)
-	fn_end(&m)
-	return assemble(&m, allocator)
-}
-
 ext_inst :: proc(m: ^Module, result_ty: Id, set: Id, inst: u32, args: []Id) -> Id {
-	ops := make([]Word, 2 + len(args), context.temp_allocator)
-	ops[0] = Word(set)
-	ops[1] = inst
-	for a, i in args {
-		ops[2 + i] = Word(a)
-	}
-	return emit_typed(m, .ExtInst, result_ty, ops)
+	rid := alloc_id(m)
+	b := m.cur_block
+	assert(b != nil, "spirv: emit outside a block")
+	assert(!b.terminated, "spirv: emit into a terminated block")
+	append_inst_start(&b.insts, .ExtInst, len(args), Word(result_ty), Word(rid), Word(set), inst)
+	append_ids(&b.insts, args)
+	return rid
 }
 
 // OpExtInst in the types/constants section (DebugSource, DebugCompilationUnit).
 ext_inst_types :: proc(m: ^Module, result_ty: Id, set: Id, inst: u32, args: []Id, id := NONE) -> Id {
 	rid := id if id != NONE else alloc_id(m)
-	ops := make([]Word, 4 + len(args), context.temp_allocator)
-	ops[0] = Word(result_ty)
-	ops[1] = Word(rid)
-	ops[2] = Word(set)
-	ops[3] = inst
-	for a, i in args {
-		ops[4 + i] = Word(a)
-	}
-	append_inst(&m.types, .ExtInst, ops)
+	append_inst_start(&m.types, .ExtInst, len(args), Word(result_ty), Word(rid), Word(set), inst)
+	append_ids(&m.types, args)
 	return rid
 }
 
@@ -582,14 +498,12 @@ glsl450 :: proc(m: ^Module, result_ty: Id, inst: Glsl450, args: []Id) -> Id {
 debug_printf :: proc(m: ^Module, fmt_id: Id, args: []Id) {
 	require_ext(m, EXT_NON_SEMANTIC_INFO)
 	set := ext_inst_import(m, EXT_DEBUG_PRINTF)
-	full := make([]Word, 3 + len(args), context.temp_allocator)
-	full[0] = Word(set)
-	full[1] = u32(Debug_Printf.DebugPrintf)
-	full[2] = Word(fmt_id)
-	for a, i in args {
-		full[3 + i] = Word(a)
-	}
-	_ = emit_typed(m, .ExtInst, type_void(m), full)
+	rid := alloc_id(m)
+	b := m.cur_block
+	assert(b != nil, "spirv: emit outside a block")
+	assert(!b.terminated, "spirv: emit into a terminated block")
+	append_inst_start(&b.insts, .ExtInst, len(args), Word(type_void(m)), Word(rid), Word(set), u32(Debug_Printf.DebugPrintf), Word(fmt_id))
+	append_ids(&b.insts, args)
 }
 
 shader_debug :: proc(m: ^Module, result_ty: Id, inst: Shader_Debug, args: []Id) -> Id {
