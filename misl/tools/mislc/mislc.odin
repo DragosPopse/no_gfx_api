@@ -76,9 +76,9 @@ Options :: struct {
 print_usage :: proc() {
 	compat := ""
 	when !misl.MISL_COMPAT_NOGFX {
-		compat = `  -compat:no_gfx             no_gfx ABI: sets 0–3, compute SpecIds 13370–72, assert SpecId 13373, SPIR-V names
-                             {stem}.vert.spv / .frag.spv / .comp.spv; implies -no-bounds-check
-                             and -disable-asserts
+		compat = `  -compat:no_gfx             no_gfx ABI: sets 0–3, compute SpecIds 13370–72, assert SpecId 13373.
+                             SPIR-V: {stem}.spv, or {stem}.{entry}.spv when the file has several entries.
+                             Implies -no-bounds-check and -disable-asserts
 `
 	}
 	fmt.eprintf(
@@ -463,26 +463,13 @@ flush_diagnostics :: proc(diags: []misl.Diagnostic, as_json: bool) {
 	}
 }
 
-// no_gfx SPIR-V names match gpu_compiler: shader.vert.spv / shader.frag.spv / shadertoy.comp.spv
-compat_no_gfx_spv_name :: proc(input: string, entry: ^misl.Entry) -> string {
+// One GPU entry: {stem}.spv. Several entries: {stem}.{entry}.spv. Assembly uses the same stem with .spvasm.
+spv_artifact_name :: proc(input, entry_name, ext: string, multiple: bool) -> string {
 	stem := fpath.stem(input)
-	if entry == nil {
-		return fmt.tprintf("%s.spv", stem)
+	if multiple {
+		return fmt.tprintf("%s.%s%s", stem, entry_name, ext)
 	}
-	switch entry.kind {
-	case .Vertex:
-		return fmt.tprintf("%s.vert.spv", stem)
-	case .Fragment:
-		return fmt.tprintf("%s.frag.spv", stem)
-	case .Compute:
-		if strings.has_suffix(stem, ".comp") {
-			return fmt.tprintf("%s.spv", stem)
-		}
-		return fmt.tprintf("%s.comp.spv", stem)
-	case .Fmag:
-		return fmt.tprintf("%s.spv", stem)
-	}
-	return fmt.tprintf("%s.spv", stem)
+	return fmt.tprintf("%s%s", stem, ext)
 }
 
 mislc_flags :: proc(opt: Options) -> misl.Target_Flags {
@@ -634,8 +621,6 @@ run :: proc(opt: Options) -> Exit_Code {
 		allocator = context.temp_allocator,
 		timings = &session.timings,
 	}
-	use_no_gfx_names := opt.no_gfx || misl.MISL_COMPAT_NOGFX
-
 	for input in opt.inputs {
 		diags: [dynamic]misl.Diagnostic
 		defer delete(diags)
@@ -755,6 +740,22 @@ run :: proc(opt: Options) -> Exit_Code {
 		write_spirv := .Spirv in opt.targets
 		write_asm := .Asm in opt.targets
 		write_fmag := .Fmag in opt.targets
+		gpu_entries := 0
+		if module != nil {
+			for e in module.entries {
+				if !misl.entry_is_fmag(e) {
+					gpu_entries += 1
+				}
+			}
+		}
+		if gpu_entries == 0 {
+			for e in entries {
+				if !misl.entry_is_fmag(e) {
+					gpu_entries += 1
+				}
+			}
+		}
+		multiple_entries := gpu_entries > 1
 		for entry in entries {
 			if misl.entry_is_fmag(entry) {
 				if !write_fmag && !write_asm {
@@ -802,11 +803,8 @@ run :: proc(opt: Options) -> Exit_Code {
 				}
 				continue
 			}
-			spv_path := fmt.tprintf("%s/%s.entry.%s.spv", opt.out_dir, stem, entry.name)
-			asm_path := fmt.tprintf("%s/%s.entry.%s.spvasm", opt.out_dir, stem, entry.name)
-			if use_no_gfx_names {
-				spv_path = fmt.tprintf("%s/%s", opt.out_dir, compat_no_gfx_spv_name(input, entry))
-			}
+			spv_path := fmt.tprintf("%s/%s", opt.out_dir, spv_artifact_name(input, entry.name, ".spv", multiple_entries))
+			asm_path := fmt.tprintf("%s/%s", opt.out_dir, spv_artifact_name(input, entry.name, ".spvasm", multiple_entries))
 
 			src := module.fullpath if module != nil && module.fullpath != "" else input
 			if write_spirv || write_asm {

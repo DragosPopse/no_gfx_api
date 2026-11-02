@@ -1647,7 +1647,7 @@ mislc check <input.misl> [flags]
 | `-quiet` / `-verbose` | Log noise |
 | `-no-bounds-check` | Default off for `[]T` index checks (overridden by `#bounds_check`) |
 | `-disable-asserts` | Typecheck `debug.assert`/`panic`; emit no claim |
-| `-compat:no_gfx` | no_gfx ABI: bindless sets 0–3, compute SpecIds 13370–72 with `@(size)` defaults, assert SpecId 13373, SPIR-V names `{stem}.vert.spv` / `.frag.spv` / `.comp.spv`. Implies `-no-bounds-check` and `-disable-asserts`. Omitted from usage when `mislc` is baked with `MISL_COMPAT_NOGFX`. |
+| `-compat:no_gfx` | no_gfx ABI: bindless sets 0–3, compute SpecIds 13370–72 with `@(size)` defaults, assert SpecId 13373. SPIR-V output is `{stem}.spv`, or `{stem}.{entry}.spv` when the file has more than one GPU entry. Implies `-no-bounds-check` and `-disable-asserts`. Omitted from usage when `mislc` is baked with `MISL_COMPAT_NOGFX`. |
 | `-error-limit:<n>` | Cap reported errors |
 | `-color:auto\|always\|never` | Diagnostics color |
 | `-json` | Machine-readable diagnostics |
