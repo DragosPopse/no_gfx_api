@@ -31,7 +31,7 @@ Workgroup_Size_Y_Spec_Const_ID :: 13371
 @(private="file")
 Workgroup_Size_Z_Spec_Const_ID :: 13372
 @(private="file")
-Assert_Buf_Spec_Const_ID :: 13373
+Disable_Asserts_Spec_Const_ID :: 13373
 
 @(private="file")
 Graphics_Shader_Push_Constants :: struct #all_or_none {
@@ -1961,7 +1961,8 @@ _shader_create_internal :: proc(code: []u32, is_compute: bool, vk_stage: vk.Shad
 
     // Add general spec constants
     {
-        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Assert_Buf_Spec_Const_ID, 0)
+        disable_asserts := !ctx.validation
+        add_spec_const(spec_data, spec_map_entries, &spec_count_cur, Disable_Asserts_Spec_Const_ID, u32(disable_asserts))
     }
 
     // Add user-provided spec constants

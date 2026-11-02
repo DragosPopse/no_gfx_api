@@ -15,7 +15,6 @@ Spirv_Emit :: struct {
 	embed_source:          bool,
 	names:                 bool,
 	named_entry:           bool,
-	disable_asserts_spec_id: u32,
 }
 
 Spv_Layout :: enum {
@@ -90,7 +89,6 @@ Spv_CG :: struct {
 	debug_info:    bool,
 	embed_source:  bool,
 	named_entry:   bool,
-	disable_asserts_spec_id: u32,
 	subgroup_size: spv.Id,
 	subgroup_lane: spv.Id,
 
@@ -402,7 +400,6 @@ codegen_spirv :: proc(module: ^Module, entry: ^Entity, code_allocator: runtime.A
 	cg.debug_info = emit.debug_info
 	cg.embed_source = emit.debug_info && emit.embed_source
 	cg.named_entry = emit.named_entry
-	cg.disable_asserts_spec_id = emit.disable_asserts_spec_id
 	cg.types = make(map[^Type]Spv_Type_Info, context.temp_allocator)
 	cg.psb_ro_id = make(map[spv.Id]Spv_Psb, context.temp_allocator)
 	cg.psb_rw_id = make(map[spv.Id]Spv_Psb, context.temp_allocator)

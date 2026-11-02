@@ -663,7 +663,7 @@ Query / vote / broadcast / reduce / ballot / exclusive prefix (`wave.prefix_sum`
 
 #### `debug.assert` / `debug.panic` **[core]**
 
-Shaders cannot abort the process. These builtins CAS-write one host-mapped record per command buffer. The pointer is push-constant member 0 (`_assert_`, `PhysicalStorageBuffer`). A bool spec constant (`Target.disable_asserts_spec_id`, default `0`; `oge/gpu` specializes the same id) disables claims when true. The claim runs only when that bool is false and the pointer is not null. The host waits that command buffer's queue timeline after `gpu.submit` and `gpu.fatal`s if the record fired.
+Shaders cannot abort the process. These builtins CAS-write one host-mapped record per command buffer. The pointer is push-constant member 0 (`_assert_`, `PhysicalStorageBuffer`). A bool spec constant disables claims when true. Its SpecId is `0`, or `13373` under no_gfx (the id the host specializes). The claim runs only when that bool is false and the pointer is not null. The host waits that command buffer's queue timeline after `gpu.submit` and `gpu.fatal`s if the record fired.
 
 ```misl
 debug.assert(cond)
@@ -690,7 +690,7 @@ CLI **OR** file tag turns a thing off. `#bounds_check` re-enables slice checks e
 
 Allowed statement hosts: `{}`, `if`, `when`, `which`, `for`, `switch`, `return`, assignment, mutable `:=` declaration. Expression form: `x := #no_bounds_check s[i]`. Procedure suffix: `proc() #no_bounds_check { … }`.
 
-The compiler injects a Vulkan bool spec constant that disables assert claims; the id is `Target.disable_asserts_spec_id` (default `0`; oge/gpu uses `0`). The record address is push-constant member 0, not the spec constant. `#config` is check/compile-time and is not a user SpecId.
+The compiler injects a Vulkan bool spec constant that disables assert claims. Its SpecId is `0`, or `13373` under no_gfx, which is the id the host specializes. The record address is push-constant member 0, not the spec constant. `#config` is check/compile-time and is not a user SpecId.
 
 #### `debug.printf` / `debug.printfln` **[core]**
 
@@ -855,7 +855,7 @@ flag: b32
 
 The value is a SPIR-V specialization constant (`SpecId` from the attribute), not a folded `::` constant. `u32`, `i32`, and `f32` are `OpSpecConstant`. `b32` is `OpSpecConstantTrue` or `OpSpecConstantFalse` (SPIR-V `bool`). Uses are not folded: `spec + N` stays a runtime add of the spec id and a normal constant. `when`, `which`, case labels, and array lengths cannot use them. `@(size = spec)` on a compute entry emits `LocalSizeId` when `spec` is a `u32` specialization constant whose default is a legal workgroup size.
 
-Ids are unique across the import DAG. The assert-disable SpecId (`Target.disable_asserts_spec_id`, default `0`, `mislc -disable-asserts-spec-id`) is reserved, as are 13370–13372 under `-compat:no_gfx`. A declaration in another package keeps its id (`lib.step`). The host passes overrides to `gpu.create_compute_pipeline` / `gpu.create_graphics_pipeline` as `[]gpu.Spec_Const`.
+Ids are unique across the import DAG. SpecId `0` is reserved for the assert-disable bool. Under `-compat:no_gfx` that id is `13373`, and 13370–13372 are reserved as well. A declaration in another package keeps its id (`lib.step`). The host passes overrides to `gpu.create_compute_pipeline` / `gpu.create_graphics_pipeline` as `[]gpu.Spec_Const`.
 
 ### `#intrinsic` / `@builtin` **[core]**
 
@@ -1619,7 +1619,7 @@ MISL is consumed through a host API (and a small CLI):
 2. **`load_module_*`** — parse the file and its import DAG. No typecheck, no emit, no `#config`. The parser fills `module.entries` (`[]^Entry`) from `proc "vertex"` / `"fragment"` / `"compute"` / `"fmag"` and `module.pipelines` from `name :: pipeline { … }`. `entry.entity` is nil until check.
 3. **`misl.check(parsed, target)`** — optional for hosts. Re-parse, then lock `#config` plus bounds/`no_gfx` plus **`MISL_MODE` from `Target.formats`** (GPU bits → `.SPIRV`, FMAG bits → `.FMAG`). Typecheck helpers + every GPU entry (`.SPIRV`) or every `proc "fmag"` (`.FMAG`). `target.no_gfx_compatibility` is OR’d with baked `MISL_COMPAT_NOGFX`.
 4. **Find** an entry or pipeline by name on the **parsed** module (`find_entry_with_name` / `find_pipeline_with_name` / `for e in module.entries`).
-5. **`compile_entry(entry, target, opts)`** — `check` for this Target’s Mode if needed, then emit Direct SPIR-V. `Target.flags`: `.Debug` (DebugInfo + OpLine + OpName/OpMemberName + embed source), `.No_Source` (with Debug: skip DebugSource text), `.Named_Entry` (`OpEntryPoint` uses the MISL proc name; otherwise `"main"`). Opt (`target.opt`) does not strip debug when `.Debug` is on. The disable-asserts bool SpecId is `target.disable_asserts_spec_id` (default `0`; `mislc -disable-asserts-spec-id:<n>`). **`compile_fmag_entry`** — same `check` for `.FMAG`, then FMAG emit.
+5. **`compile_entry(entry, target, opts)`** — `check` for this Target’s Mode if needed, then emit Direct SPIR-V. `Target.flags`: `.Debug` (DebugInfo + OpLine + OpName/OpMemberName + embed source), `.No_Source` (with Debug: skip DebugSource text), `.Named_Entry` (`OpEntryPoint` uses the MISL proc name; otherwise `"main"`). Opt (`target.opt`) does not strip debug when `.Debug` is on. The disable-asserts bool SpecId is `0`, or `13373` under no_gfx. **`compile_fmag_entry`** — same `check` for `.FMAG`, then FMAG emit.
 6. **Unload** modules / destroy the session.
 
 `check` / `check_for_diagnostics` stay for tools. The game path does not call `check` before `find_*`. `-list-entries` is parse-only.
@@ -1641,14 +1641,13 @@ mislc check <input.misl> [flags]
 | `-debug` | DebugInfo + OpLine + OpName/OpMemberName + embed MISL source (default off). |
 | `-no-source` | With `-debug`: skip DebugSource text (no-op otherwise). |
 | `-named-entry` | `OpEntryPoint` uses the MISL proc name (default is `"main"`). |
-| `-disable-asserts-spec-id:<n>` | Bool spec constant that disables assert claims (u32, default `0`). |
 | `-entry:<name>` | Repeatable; only these entries |
 | `-pipeline:<name>` | Compile a `pipeline` constant |
 | `-list-entries` | Print entry/pipeline names and exit (parse-only) |
 | `-quiet` / `-verbose` | Log noise |
 | `-no-bounds-check` | Default off for `[]T` index checks (overridden by `#bounds_check`) |
 | `-disable-asserts` | Typecheck `debug.assert`/`panic`; emit no claim |
-| `-compat:no_gfx` | no_gfx ABI: bindless sets 0–3, compute SpecIds 13370–72 with `@(size)` defaults, SPIR-V names `{stem}.vert.spv` / `.frag.spv` / `.comp.spv`. Implies `-no-bounds-check` and `-disable-asserts`. Omitted from usage when `mislc` is baked with `MISL_COMPAT_NOGFX`. |
+| `-compat:no_gfx` | no_gfx ABI: bindless sets 0–3, compute SpecIds 13370–72 with `@(size)` defaults, assert SpecId 13373, SPIR-V names `{stem}.vert.spv` / `.frag.spv` / `.comp.spv`. Implies `-no-bounds-check` and `-disable-asserts`. Omitted from usage when `mislc` is baked with `MISL_COMPAT_NOGFX`. |
 | `-error-limit:<n>` | Cap reported errors |
 | `-color:auto\|always\|never` | Diagnostics color |
 | `-json` | Machine-readable diagnostics |

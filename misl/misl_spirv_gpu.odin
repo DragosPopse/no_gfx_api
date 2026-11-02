@@ -673,7 +673,7 @@ spv_ensure_assert_block :: proc(cg: ^Spv_CG) {
 spv_emit_assert_types :: proc(cg: ^Spv_CG) {
 	spv_ensure_assert_block(cg)
 	cg.assert_spec = spv.spec_const_false(&cg.m)
-	spv.decorate(&cg.m, cg.assert_spec, .SpecId, cg.disable_asserts_spec_id)
+	spv.decorate(&cg.m, cg.assert_spec, .SpecId, assert_disable_spec_id(cg.compat == .No_Gfx))
 	spv.name(&cg.m, cg.assert_spec, "_misl_disable_asserts")
 }
 

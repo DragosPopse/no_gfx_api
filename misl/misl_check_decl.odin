@@ -1350,11 +1350,9 @@ resolve_spec_const :: proc(c: ^Checker, e: ^Entity) {
 	id, id_ok := spec_const_attr_id(c, decl)
 	if id_ok {
 		e.spec_const_id = id
-		reserved := c.check_target.disable_asserts_spec_id
-		if id == reserved {
-			check_err(c, decl.pos, "specialization constant id %d is reserved", id)
-		}
-		if c.check_target.no_gfx_compatibility && (id == NO_GFX_LOCAL_SIZE_X_ID || id == NO_GFX_LOCAL_SIZE_Y_ID || id == NO_GFX_LOCAL_SIZE_Z_ID) {
+		no_gfx := c.check_target.no_gfx_compatibility
+		workgroup_reserved := no_gfx && (id == NO_GFX_LOCAL_SIZE_X_ID || id == NO_GFX_LOCAL_SIZE_Y_ID || id == NO_GFX_LOCAL_SIZE_Z_ID)
+		if id == assert_disable_spec_id(no_gfx) || workgroup_reserved {
 			check_err(c, decl.pos, "specialization constant id %d is reserved", id)
 		}
 	}

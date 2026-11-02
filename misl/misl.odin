@@ -91,7 +91,6 @@ Target :: struct {
 	opt:                   Optimization,
 	flags:                 Target_Flags,
 	no_gfx_compatibility:  bool,
-	disable_asserts_spec_id: u32,
 }
 
 Compile_Options :: struct {
@@ -203,7 +202,7 @@ Misl_Mode :: enum u32 {
 }
 
 // Host / SPIR-V ABI. Default matches oge/gpu. `No_Gfx` matches research/no_gfx
-// (descriptor sets 0–3, compute SpecIds 13370–72, DrawID-indexed indirect).
+// (descriptor sets 0–3, compute SpecIds 13370–72, assert SpecId 13373, DrawID-indexed indirect).
 Misl_Compat :: enum u32 {
 	None,
 	No_Gfx,
@@ -212,6 +211,14 @@ Misl_Compat :: enum u32 {
 NO_GFX_LOCAL_SIZE_X_ID :: 13370
 NO_GFX_LOCAL_SIZE_Y_ID :: 13371
 NO_GFX_LOCAL_SIZE_Z_ID :: 13372
+NO_GFX_DISABLE_ASSERTS_SPEC_ID :: 13373
+
+assert_disable_spec_id :: proc(no_gfx: bool) -> u32 {
+	if no_gfx {
+		return NO_GFX_DISABLE_ASSERTS_SPEC_ID
+	}
+	return 0
+}
 
 entry_kind_from_calling_convention :: proc(cc: string) -> (kind: Entry_Kind, ok: bool) {
 	switch cc {
@@ -661,7 +668,6 @@ compile_checked_gpu_entity :: proc(entry: ^Entity, target: Target, opts: Compile
 		embed_source = debug && .No_Source not_in target.flags,
 		names = debug,
 		named_entry = .Named_Entry in target.flags,
-		disable_asserts_spec_id = target.disable_asserts_spec_id,
 	}
 
 	entry_start := time.tick_now()
