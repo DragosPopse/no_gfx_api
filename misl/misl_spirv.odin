@@ -106,7 +106,7 @@ Spv_CG :: struct {
 	assert_spec:   spv.Id,
 	assert_ptr_ty: spv.Id,
 	assert_block:  spv.Id,
-	ep:            ^spv.Entry_Point,
+	entrypoint:    ^spv.Entry_Point,
 	iface_ids:     [dynamic]spv.Id,
 	break_stk:     [dynamic]spv.Id,
 	cont_stk:      [dynamic]spv.Id,
@@ -169,7 +169,6 @@ spv_collect_rw_elems :: proc(root: ^Module) -> map[^Type]bool {
 }
 
 spv_expr_builtin :: proc(expr: ^Expr) -> (id: Builtin_Proc, call: ^Call_Expr, ok: bool) {
-	if expr == nil do return .Invalid, nil, false
 	call, ok = unparen_expr(expr).derived.(^Call_Expr)
 	if !ok do return .Invalid, nil, false
 	callee := entity_from_expr(call.expr)
@@ -178,7 +177,6 @@ spv_expr_builtin :: proc(expr: ^Expr) -> (id: Builtin_Proc, call: ^Call_Expr, ok
 }
 
 spv_debug_name :: proc(e: ^Entity) -> string {
-	if e == nil do return ""
 	if e.owner_proc != nil && e.owner_proc.name != "" {
 		return fmt.tprintf("%s.%s", spv_debug_name(e.owner_proc), e.name)
 	}
@@ -187,7 +185,7 @@ spv_debug_name :: proc(e: ^Entity) -> string {
 
 spv_unsigned :: proc(type: ^Type) -> bool {
 	t := type_base(type)
-	if t == nil do return false
+	assert(t != nil)
 	if bs, ok := t.derived.(^Type_Bit_Set); ok {
 		t = bs.underlying
 	}
@@ -197,7 +195,6 @@ spv_unsigned :: proc(type: ^Type) -> bool {
 }
 
 spv_device_handle_elem :: proc(type: ^Type) -> (elem: ^Type, is_slice: bool, ok: bool) {
-	if type == nil do return nil, false, false
 	#partial switch t in type.derived {
 	case ^Type_Pointer: return t.elem, false, true
 	case ^Type_Multi_Pointer: return t.elem, false, true
@@ -296,7 +293,6 @@ spv_expr_to_owner :: proc(cg: ^Spv_CG, expr: ^Expr, owner: ^Entity) -> spv.Id {
 }
 
 spv_module_needs_local_size_id :: proc(module: ^Module) -> bool {
-	if module == nil do return false
 	for e in module.definitions {
 		if e == nil || e.type == nil do continue
 		pt, ok := e.type.derived.(^Type_Proc)
@@ -372,11 +368,6 @@ spirv_validate_words :: proc(words: []u32, env: spirv_tools.Target_Env, out_diag
 	return true
 }
 
-spirv_builder_self_test :: proc(out_diags: ^[dynamic]Diagnostic = nil) -> bool {
-	words := spv.build_empty_compute("empty", context.temp_allocator)
-	return spirv_validate_words(words, .Vulkan_1_2, out_diags)
-}
-
 spv_helper_timing_name :: proc(e: ^Entity) -> string {
 	if e == nil do return ""
 	pt, ok := e.type.derived.(^Type_Proc)
@@ -389,9 +380,6 @@ spv_helper_timing_name :: proc(e: ^Entity) -> string {
 @(private = "package")
 codegen_spirv :: proc(module: ^Module, entry: ^Entity, code_allocator: runtime.Allocator, emit := Spirv_Emit{}, et: ^Entry_Timing = nil) -> (code: []u32, ok: bool) {
 	context.allocator = context.temp_allocator
-	if module == nil || entry == nil {
-		return nil, false
-	}
 	pt, pok := entry.type.derived.(^Type_Proc)
 	if !pok || pt.stage == nil {
 		fmt.eprintfln("codegen_spirv: '%s' is not a GPU entry", entry.name)
@@ -539,17 +527,17 @@ spv_iface :: proc(cg: ^Spv_CG, id: spv.Id) {
 		}
 	}
 	append(&cg.iface_ids, id)
-	if cg.ep != nil {
-		spv.entry_iface(cg.ep, id)
+	if cg.entrypoint != nil {
+		spv.entry_iface(cg.entrypoint, id)
 	}
 }
 
 spv_flush_iface :: proc(cg: ^Spv_CG) {
-	if cg.ep == nil {
+	if cg.entrypoint == nil {
 		return
 	}
 	for id in cg.iface_ids {
-		spv.entry_iface(cg.ep, id)
+		spv.entry_iface(cg.entrypoint, id)
 	}
 }
 

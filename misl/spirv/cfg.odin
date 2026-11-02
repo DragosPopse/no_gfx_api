@@ -2,32 +2,32 @@ package spirv
 
 return_void :: proc(m: ^Module) {
 	emit_fn_lit(m, .Return_)
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 return_value :: proc(m: ^Module, v: Id) {
 	emit_fn_lit(m, .ReturnValue, Word(v))
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 unreachable :: proc(m: ^Module) {
 	emit_fn_lit(m, .Unreachable)
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 kill :: proc(m: ^Module) {
 	emit_fn_lit(m, .Kill)
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 branch :: proc(m: ^Module, target: Id) {
 	emit_fn_lit(m, .Branch, Word(target))
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 branch_cond :: proc(m: ^Module, cond, true_blk, false_blk: Id) {
 	emit_fn_lit(m, .BranchConditional, Word(cond), Word(true_blk), Word(false_blk))
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 selection_merge :: proc(m: ^Module, merge: Id, control := Selection_Control.None) {
@@ -52,7 +52,7 @@ switch_u32 :: proc(m: ^Module, selector, default_blk: Id, cases: []Switch_Case) 
 		ops[3 + 2 * i] = Word(c.label)
 	}
 	emit_fn(m, .Switch_, ops)
-	mark_terminated(m)
+	m.cur_block.terminated = true
 }
 
 load :: proc(m: ^Module, ty, ptr: Id, access: u32 = 0, extra: ..u32) -> Id {

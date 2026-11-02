@@ -1001,7 +1001,7 @@ spv_emit_entry :: proc(cg: ^Spv_CG, e: ^Entity) {
 	case .Fragment: model = .Fragment
 	case .Compute: model = .GLCompute
 	}
-	cg.ep = spv.entry_point(&cg.m, model, fn, ep_name)
+	cg.entrypoint = spv.entry_point(&cg.m, model, fn, ep_name)
 	if cg.stage == .Fragment {
 		spv.execution_mode(&cg.m, fn, .OriginUpperLeft)
 		if pt.results != nil {
