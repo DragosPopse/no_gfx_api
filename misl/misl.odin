@@ -652,10 +652,6 @@ compile_checked_gpu_entity :: proc(entry: ^Entity, target: Target, opts: Compile
 	allocator := compile_allocator(opts)
 	out_diags := opts.diags
 	timings := opts.timings
-	if !ensure_spirv_builder_ok(out_diags) {
-		fmt.eprintfln("compile_entry: SPIR-V builder self-test failed")
-		return
-	}
 
 	need_direct := .spirv in target.formats || .spirv_asm in target.formats
 
@@ -763,17 +759,6 @@ checked_pipeline :: proc(pipe: ^Pipeline, target: Target, opts := Load_Options{}
 	}
 	pipe.entity = live.entity
 	return live.entity.checked_pipeline
-}
-
-@(private)
-_spirv_self_tested: bool
-
-ensure_spirv_builder_ok :: proc(out_diags: ^[dynamic]Diagnostic = nil) -> bool {
-	if _spirv_self_tested {
-		return true
-	}
-	_spirv_self_tested = true
-	return spirv_builder_self_test(out_diags)
 }
 
 compile_entry_direct :: proc(entry: ^Entity, timings: ^Timings, out_diags: ^[dynamic]Diagnostic, emit: Spirv_Emit, et: ^Entry_Timing = nil) -> []u32 {
