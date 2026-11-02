@@ -235,6 +235,20 @@ Ray_Result :: struct {
 @builtin rw16_cube_array :: #intrinsic("builtin.rw16_cube_array")
 @builtin rw32_cube_array :: #intrinsic("builtin.rw32_cube_array")
 
+// Builtin types for ease of use
+@builtin f32x2 :: [2]f32
+@builtin f32x3 :: [3]f32
+@builtin f32x4 :: [4]f32
+@builtin f32x2x2 :: matrix[2, 2]f32
+@builtin f32x2x3 :: matrix[2, 3]f32
+@builtin f32x2x4 :: matrix[2, 4]f32
+@builtin f32x3x2 :: matrix[3, 2]f32
+@builtin f32x3x3 :: matrix[3, 3]f32
+@builtin f32x3x4 :: matrix[3, 4]f32
+@builtin f32x4x2 :: matrix[4, 2]f32
+@builtin f32x4x3 :: matrix[4, 3]f32
+@builtin f32x4x4 :: matrix[4, 4]f32
+
 // Semantics: they stand only after `|`. Declared in every mode: an FMAG check of a file also checks its GPU entries. Docs are `semantic_names` in misl_checker.odin. A user location is `#inout(T, N)`.
 @builtin SV_Position :: #intrinsic("sv.Position")
 @builtin SV_Target :: #intrinsic("sv.Target")
