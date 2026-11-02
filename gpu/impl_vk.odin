@@ -3622,6 +3622,7 @@ vk_acquire_cmd_buf :: proc(queue: Queue) -> Command_Buffer
         thread_id = sync.current_thread_id(),
         context_buf = mem_alloc(Assert_Record, mem_type = Memory.Readback)
     }
+    cmd_buf_info.context_buf.cpu.fired = 0
 
     // If no free command buffer is available, create a new one
     cmd_buf_ai := vk.CommandBufferAllocateInfo {
