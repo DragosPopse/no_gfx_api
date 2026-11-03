@@ -204,9 +204,15 @@ Ray_Desc :: struct {
 	dir:       [3]f32,
 }
 
+Ray_Result_Kind :: enum u32 {
+	Miss,
+	Triangle,
+	AABB,
+}
+
 @builtin
 Ray_Result :: struct {
-	kind:            u32,
+	kind:            Ray_Result_Kind,
 	t:               f32,
 	instance_idx:    u32,
 	primitive_idx:   u32,

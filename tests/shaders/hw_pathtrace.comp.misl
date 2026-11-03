@@ -1,5 +1,4 @@
 PI :: 3.1415
-HIT_MESH :: 1
 
 Mesh :: struct {
 	pos:    [^]f32x4,
@@ -145,7 +144,7 @@ ray_scene_intersection :: proc(ray: Ray, tlas_id: bvh32, scene: Scene) -> Hit_In
 	_ = rayquery_proceed(rq)
 	hit := rayquery_result(rq)
 
-	if hit.kind != HIT_MESH {
+	if hit.kind != .Triangle {
 		hit_info.hit = false
 		return hit_info
 	}

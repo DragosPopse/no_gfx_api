@@ -36,6 +36,6 @@ cs :: proc "compute"(
 	_ = transpose(o2w) * vec3(0, 0, 1)
 	_ = transpose(w2o) * vec3(0, 0, 1)
 
-	col := vec4(f32(hit.kind), hit.t, f32(hit.instance_idx), 1)
+	col := vec4(f32(u32(hit.kind)), hit.t, f32(hit.instance_idx), 1)
 	store(data.dst, ivec2(i32(gid.x), i32(gid.y)), col)
 }

@@ -132,7 +132,6 @@ is_finite :: proc(v: vec3) -> b32 {
 
 ray_scene_intersection :: proc(ray: Ray, tlas_id: bvh32, scene: Scene) -> Hit_Info {
 	Ray_Flags_Opaque :: 1
-	Ray_Result_Kind_Hit_Mesh :: 1
 
 	hit_info: Hit_Info
 	desc: Ray_Desc
@@ -146,7 +145,7 @@ ray_scene_intersection :: proc(ray: Ray, tlas_id: bvh32, scene: Scene) -> Hit_In
 	_ = rayquery_proceed(rq)
 	hit := rayquery_result(rq)
 
-	if hit.kind != Ray_Result_Kind_Hit_Mesh {
+	if hit.kind != .Triangle {
 		hit_info.hit = false
 		return hit_info
 	}
