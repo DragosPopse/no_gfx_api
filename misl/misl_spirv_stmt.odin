@@ -263,10 +263,18 @@ spv_assign_op :: proc(cg: ^Spv_CG, op: Token_Kind, l, r: spv.Id, lt, rt: ^Type) 
 	lf := type_is_float(type_base(lt))
 	rhs := r
 	rt := rt
+
+	// Float vector * scalar is a dedicated instruction
+	if op == .Mul_Eq && type_is_vector(lt) && type_is_float(type_base(lt)) && !type_is_vector(rt) && !type_is_matrix(rt) {
+		s := spv_convert(cg, r, rt, type_base(lt))
+		return spv.vector_times_scalar(&cg.m, ty, l, s)
+	}
+
 	if type_is_vector(lt) && !type_is_vector(rt) && !type_is_matrix(rt) {
 		rhs = spv_match_gen(cg, r, rt, lt)
 		rt = lt
 	}
+
 	#partial switch op {
 	case .Add_Eq: return spv.fadd(&cg.m, ty, l, rhs) if lf else spv.iadd(&cg.m, ty, l, rhs)
 	case .Sub_Eq: return spv.fsub(&cg.m, ty, l, rhs) if lf else spv.isub(&cg.m, ty, l, rhs)

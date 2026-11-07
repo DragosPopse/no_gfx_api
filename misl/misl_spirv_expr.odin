@@ -547,6 +547,7 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 	if op == .Cmp_And || op == .Cmp_Or {
 		return spv_logical_bin(cg, v)
 	}
+
 	l := spv_rvalue(cg, v.left)
 	r := spv_rvalue(cg, v.right)
 	lt := default_type(v.left.tav.type)
@@ -554,6 +555,27 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 	res_t := default_type(v.tav.type)
 	ty := spv_type(cg, res_t)
 	lf := type_is_float(type_base(lt)) || type_is_float(type_base(rt)) || type_is_float(type_base(res_t))
+
+	// Float vector * scalar is a dedicated instruction
+	if op == .Mul && type_is_vector(res_t) && type_is_float(type_base(res_t)) {
+		if type_is_vector(lt) && !type_is_vector(rt) && !type_is_matrix(rt) {
+			vec := l
+			if !type_eq(lt, res_t) {
+				vec = spv_convert(cg, l, lt, res_t)
+			}
+			s := spv_convert(cg, r, rt, type_base(res_t))
+			return spv.vector_times_scalar(&cg.m, ty, vec, s)
+		}
+		if type_is_vector(rt) && !type_is_vector(lt) && !type_is_matrix(lt) {
+			vec := r
+			if !type_eq(rt, res_t) {
+				vec = spv_convert(cg, r, rt, res_t)
+			}
+			s := spv_convert(cg, l, lt, type_base(res_t))
+			return spv.vector_times_scalar(&cg.m, ty, vec, s)
+		}
+	}
+
 	// A compare's result is a bool vector. Splatting the operands onto that type would turn the numbers into b32s first.
 	if !op_is_relation(op) && !type_is_matrix(lt) && !type_is_matrix(rt) && type_is_vector(res_t) {
 		l = spv_match_gen(cg, l, lt, res_t)
@@ -567,6 +589,7 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		l = spv_match_gen(cg, l, lt, rt)
 		lt = rt
 	}
+
 	#partial switch op {
 	case .Add:
 		return spv.fadd(&cg.m, ty, l, r) if lf else spv.iadd(&cg.m, ty, l, r)
@@ -611,6 +634,7 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		b := spv_compare(cg, op, l, r, lt)
 		return spv_from_bool(cg, b, res_t)
 	}
+
 	spv_err(cg, v.pos, "codegen_spirv: unsupported binary %v", op)
 	return l
 }
