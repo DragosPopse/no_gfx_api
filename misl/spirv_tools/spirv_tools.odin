@@ -2,10 +2,20 @@ package spirv_tools
 
 import "core:c"
 
-@(extra_linker_flags = "/NODEFAULTLIB:libcmt")
-foreign import lib {
-	"../../gpu_compiler/glslang_odin/libs/SPIRV-Tools.lib",
-	"../../gpu_compiler/glslang_odin/libs/SPIRV-Tools-opt.lib",
+when ODIN_OS == .Windows {
+    @(extra_linker_flags = "/NODEFAULTLIB:libcmt")
+    foreign import lib {
+        "libs/SPIRV-Tools-opt.lib",
+        "libs/SPIRV-Tools.lib",
+    }
+} else when ODIN_OS == .Linux {
+    @(extra_linker_flags = "-lstdc++")
+    foreign import lib {
+        "libs/libSPIRV-Tools-opt.a",
+        "libs/libSPIRV-Tools.a",
+    }
+} else {
+	#panic("OS not supported.")
 }
 
 @(default_calling_convention = "c")
@@ -83,7 +93,7 @@ foreign lib {
 	// types.  Other decorations are not relevant.
 	@(link_name = "spvValidatorOptionsSetRelaxStoreStruct")
 	validator_options_set_relax_store_struct :: proc(options: Validator_Options, val: bool) ---
-	
+
 	// Records whether or not the validator should relax the rules on pointer usage
 	// in logical addressing mode.
 	//

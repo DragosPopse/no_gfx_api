@@ -25,16 +25,13 @@ COMMANDS := []Command {
     { "vercheck",  cmd_vercheck  },
     { "check_gpu", cmd_check_gpu },
     { "compiler",  cmd_compiler  },
-    { "shaders_nosl", cmd_shaders_nosl },
+    { "shaders_misl", cmd_shaders_misl },
     { "shaders_slang", cmd_shaders_slang },
     { "run_compiler_tests", cmd_run_compiler_tests },
     { "tests_gen_local_goldens", cmd_tests_gen_local_goldens },
     { "tests_compare_local_goldens", cmd_tests_compare_local_goldens },
     { "tests_compare_global_goldens", cmd_tests_compare_global_goldens },              // Only to be used in GitHub Actions
     { "tests_gen_local_goldens_gh_actions", cmd_tests_gen_local_goldens_gh_actions },  // Only to be used in GitHub Actions
-
-	{ "mislc", cmd_compiler_mislc },
-	{ "all_misl", cmd_default_misl},
 }
 
 Example :: struct
@@ -57,20 +54,11 @@ cmd_default :: proc() -> bool
     return res
 }
 
-cmd_default_misl :: proc() -> bool
-{
-	cmd_check_gpu() or_return
-    res := true
-    res &= cmd_compiler_mislc()
-    res &= cmd_build_examples_parallel(true, false, false, true)
-    return res
-}
-
 cmd_build_all_with_slang :: proc() -> bool
 {
     cmd_check_gpu() or_return
     res := true
-    res &= cmd_build_examples_parallel(build_shaders_nosl = false, build_shaders_slang = true)
+    res &= cmd_build_examples_parallel(build_shaders_misl = false, build_shaders_slang = true)
     return res
 }
 
@@ -172,21 +160,14 @@ cmd_check_tests :: proc() -> bool
     return res
 }
 
-cmd_compiler_mislc :: proc() -> bool
+cmd_compiler :: proc() -> bool
 {
     res := true
     res &= run_task("odin", "build", "misl/tools/mislc", "-debug", with_exe_ext("-out=build/mislc"))
     return res
 }
 
-cmd_compiler :: proc() -> bool
-{
-    res := true
-    res &= run_task("odin", "build", "gpu_compiler", "-debug", with_exe_ext("-out=build/gpu_compiler"))
-    return res
-}
-
-cmd_shaders_nosl :: proc() -> bool
+cmd_shaders_misl :: proc() -> bool
 {
     cmd_compiler() or_return
     res := true
@@ -198,13 +179,13 @@ cmd_shaders_slang :: proc() -> bool
 {
     cmd_compiler() or_return
     res := true
-    res &= cmd_build_examples_parallel(build_odin = false, build_shaders_nosl = false, build_shaders_slang = true)
+    res &= cmd_build_examples_parallel(build_odin = false, build_shaders_misl = false, build_shaders_slang = true)
     return res
 }
 
 cmd_run_compiler_tests :: proc() -> bool
 {
-    cmd_compiler_mislc() or_return
+    cmd_compiler() or_return
     res := true
 
     dir := "tests"
@@ -397,7 +378,7 @@ get_shaders_in_dir :: proc(path: string) -> (shaders_nosl: [dynamic]string, shad
     return shaders_nosl, shaders_slang, shaders_misl
 }
 
-cmd_build_examples_parallel :: proc(build_odin := true, build_shaders_nosl := true, build_shaders_slang := false, build_shaders_misl := false) -> bool
+cmd_build_examples_parallel :: proc(build_odin := true, build_shaders_misl := true, build_shaders_slang := false) -> bool
 {
     PARALLEL :: true
 
@@ -405,11 +386,10 @@ cmd_build_examples_parallel :: proc(build_odin := true, build_shaders_nosl := tr
 
     Info :: struct {
         build_odin: bool,
-        build_shaders_nosl: bool,
+        build_shaders_misl: bool,
         build_shaders_slang: bool,
-		build_shaders_misl: bool,
     }
-    info := Info { build_odin, build_shaders_nosl, build_shaders_slang, build_shaders_misl }
+    info := Info { build_odin, build_shaders_misl, build_shaders_slang }
 
     Task :: struct {
         example: Example,
@@ -437,15 +417,12 @@ cmd_build_examples_parallel :: proc(build_odin := true, build_shaders_nosl := tr
     worker :: proc(task: ^Task, info: ^Info)
     {
         res := true
-        if res && info.build_shaders_nosl {
-            res &= cmd_build_example_shaders_nosl(task.example)
+        if res && info.build_shaders_misl {
+            res &= cmd_build_example_shaders_misl(task.example)
         }
         if res && info.build_shaders_slang {
             res &= cmd_build_example_shaders_slang(task.example)
         }
-		if res && info.build_shaders_misl {
-			res &= cmd_build_example_shaders_misl(task.example)
-		}
         if res && info.build_odin {
             res &= cmd_build_example(task.example)
         }
