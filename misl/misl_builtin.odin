@@ -54,6 +54,8 @@ Builtin_Proc :: enum {
 	fma,
 	frexp,
 	ldexp,
+	all,
+	any,
 
 	// Geom
 	mag, // length
@@ -200,6 +202,8 @@ builtin_names := [Builtin_Proc]string {
 	.fma                 = "fma",
 	.frexp            = "frexp",
 	.ldexp            = "ldexp",
+	.all              = "all",
+	.any              = "any",
 	.mag              = "mag",
 	.dist             = "dist",
 	.dot              = "dot",
@@ -1236,6 +1240,19 @@ check_modf_frexp :: proc(checker: ^Checker, call: ^Call_Expr, id: Builtin_Proc) 
 }
 
 @(private)
+check_all_any :: proc(checker: ^Checker, call: ^Call_Expr, id: Builtin_Proc) -> Operand {
+	if !expect_argc(checker, call, id, 1) do return builtin_fail(checker, call)
+	x := check_expr(checker, call.args[0])
+	if x.mode == .Invalid do return builtin_fail(checker, call)
+	v, is_vec := x.type.derived.(^Type_Vector)
+	if !is_vec || v.elem == nil || !type_is_boolean(v.elem) {
+		check_err(checker, call.pos, "builtin '%s' expects a boolean vector, got '%s'", builtin_names[id], string_from_type(x.type))
+		return builtin_fail(checker, call)
+	}
+	return builtin_value(call, id, t_b32)
+}
+
+@(private)
 check_transpose :: proc(checker: ^Checker, call: ^Call_Expr, id: Builtin_Proc) -> Operand {
 	if !expect_argc(checker, call, id, 1) do return builtin_fail(checker, call)
 	m := check_expr(checker, call.args[0])
@@ -1412,6 +1429,7 @@ check_builtin :: proc(checker: ^Checker, call: ^Call_Expr, id: Builtin_Proc, typ
 	case .refract: return check_refract(checker, call, id)
 	case .ldexp: return check_ldexp(checker, call, id)
 	case .modf, .frexp: return check_modf_frexp(checker, call, id)
+	case .all, .any: return check_all_any(checker, call, id)
 
 	case .transpose: return check_transpose(checker, call, id)
 	case .determinant, .inverse: return check_determinant_inverse(checker, call, id)

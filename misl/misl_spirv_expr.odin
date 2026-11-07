@@ -554,7 +554,8 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 	res_t := default_type(v.tav.type)
 	ty := spv_type(cg, res_t)
 	lf := type_is_float(type_base(lt)) || type_is_float(type_base(rt)) || type_is_float(type_base(res_t))
-	if !type_is_matrix(lt) && !type_is_matrix(rt) && type_is_vector(res_t) {
+	// A compare's result is a bool vector. Splatting the operands onto that type would turn the numbers into b32s first.
+	if !op_is_relation(op) && !type_is_matrix(lt) && !type_is_matrix(rt) && type_is_vector(res_t) {
 		l = spv_match_gen(cg, l, lt, res_t)
 		r = spv_match_gen(cg, r, rt, res_t)
 		lt = res_t
@@ -648,36 +649,39 @@ spv_mul :: proc(cg: ^Spv_CG, l, r: spv.Id, lt, rt, res: ^Type) -> spv.Id {
 }
 
 spv_compare :: proc(cg: ^Spv_CG, op: Token_Kind, l, r: spv.Id, lt: ^Type) -> spv.Id {
+	bty := spv_bool_type(cg, lt)
 	base := type_base(lt)
+
+	spv_op: spv.Op
 	if type_is_float(base) {
 		#partial switch op {
-		case .Cmp_Eq: return spv.ford_equal(&cg.m, l, r)
-		case .Not_Eq: return spv.ford_not_equal(&cg.m, l, r)
-		case .Lt: return spv.ford_less(&cg.m, l, r)
-		case .Gt: return spv.ford_greater(&cg.m, l, r)
-		case .Lt_Eq: return spv.ford_less_equal(&cg.m, l, r)
-		case .Gt_Eq: return spv.ford_greater_equal(&cg.m, l, r)
+		case .Cmp_Eq: spv_op = .FOrdEqual
+		case .Not_Eq: spv_op = .FOrdNotEqual
+		case .Lt:     spv_op = .FOrdLessThan
+		case .Gt:     spv_op = .FOrdGreaterThan
+		case .Lt_Eq:  spv_op = .FOrdLessThanEqual
+		case .Gt_Eq:  spv_op = .FOrdGreaterThanEqual
 		}
-	}
-	if spv_unsigned(base) {
+	} else if spv_unsigned(base) {
 		#partial switch op {
-		case .Cmp_Eq: return spv.iequal(&cg.m, l, r)
-		case .Not_Eq: return spv.inot_equal(&cg.m, l, r)
-		case .Lt: return spv.uless_than(&cg.m, l, r)
-		case .Gt: return spv.ugreater_than(&cg.m, l, r)
-		case .Lt_Eq: return spv.uless_equal(&cg.m, l, r)
-		case .Gt_Eq: return spv.ugreater_equal(&cg.m, l, r)
+		case .Cmp_Eq: spv_op = .IEqual
+		case .Not_Eq: spv_op = .INotEqual
+		case .Lt:     spv_op = .ULessThan
+		case .Gt:     spv_op = .UGreaterThan
+		case .Lt_Eq:  spv_op = .ULessThanEqual
+		case .Gt_Eq:  spv_op = .UGreaterThanEqual
+		}
+	} else {
+		#partial switch op {
+		case .Cmp_Eq: spv_op = .IEqual
+		case .Not_Eq: spv_op = .INotEqual
+		case .Lt:     spv_op = .SLessThan
+		case .Gt:     spv_op = .SGreaterThan
+		case .Lt_Eq:  spv_op = .SLessThanEqual
+		case .Gt_Eq:  spv_op = .SGreaterThanEqual
 		}
 	}
-	#partial switch op {
-	case .Cmp_Eq: return spv.iequal(&cg.m, l, r)
-	case .Not_Eq: return spv.inot_equal(&cg.m, l, r)
-	case .Lt: return spv.sless_than(&cg.m, l, r)
-	case .Gt: return spv.sgreater_than(&cg.m, l, r)
-	case .Lt_Eq: return spv.sless_equal(&cg.m, l, r)
-	case .Gt_Eq: return spv.sgreater_equal(&cg.m, l, r)
-	}
-	return spv.const_bool(&cg.m, false)
+	return spv.relation(&cg.m, spv_op, bty, l, r)
 }
 
 spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
@@ -1142,6 +1146,12 @@ spv_glsl450_or_core :: proc(cg: ^Spv_CG, id: Builtin_Proc, call: ^Call_Expr) -> 
 		return spv_from_bool(cg, spv.is_nan(&cg.m, arg(cg, call, 0)), res_t)
 	case .is_inf:
 		return spv_from_bool(cg, spv.is_inf(&cg.m, arg(cg, call, 0)), res_t)
+	case .all:
+		v := spv_as_bool(cg, arg(cg, call, 0), call.args[0].tav.type)
+		return spv_from_bool(cg, spv.all(&cg.m, v), res_t)
+	case .any:
+		v := spv_as_bool(cg, arg(cg, call, 0), call.args[0].tav.type)
+		return spv_from_bool(cg, spv.any_(&cg.m, v), res_t)
 	case .f32_from_u32_bits:
 		return spv.bitcast(&cg.m, spv.type_f32(&cg.m), arg(cg, call, 0))
 	case .u32_from_f32_bits:

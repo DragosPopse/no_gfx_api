@@ -74,7 +74,7 @@ Atom_Kind :: enum {
 	Invalid,
 	string, rune,
 	rawptr, uptr,
-	any, typeid_,
+	typeid_,
 	Ray_Query,
 	Untyped_String, Untyped_Rune,
 }
@@ -1116,7 +1116,6 @@ init_core_types :: proc(allocator := context.allocator) {
 		.uptr   = new_atom_type(.uptr,   "uptr",   8, nil),
 		.rawptr = new_atom_type(.rawptr, "rawptr", 8, {.Pointer}),
 
-		.any     = new_atom_type(.any,     "any",     16, nil),
 		.typeid_ = new_atom_type(.typeid_, "typeid",   8, nil),
 		.Ray_Query = new_atom_type(.Ray_Query, "Ray_Query", 0, nil, "rayQueryEXT"),
 
@@ -1410,6 +1409,43 @@ type_from_binary_op :: proc(left: ^Type, op: Token_Kind, right: ^Type) -> ^Type 
 		return t_invalid
 	}
 
+	// Commutative operations:
+	for i in 0..<2 {
+		t1 := left  if i == 0 else right
+		t2 := right if i == 0 else left
+
+		#partial switch a in t1.derived {
+		case ^Type_Vector:
+			#partial switch b in t2.derived {
+			case ^Type_Scalar:
+				if op_is_arithmetic(op) {
+					if !type_is_implicit_castable(a.elem, b) {
+						return t_invalid
+					}
+					return t1
+				}
+				if op_is_relation(op) {
+					if !type_is_implicit_castable(a.elem, b) {
+						return t_invalid
+					}
+					return bool_gen_from(t1)
+				}
+			}
+
+		case ^Type_Matrix:
+			#partial switch b in t2.derived {
+			case ^Type_Scalar:
+				if op_is_arithmetic(op) {
+					if !type_is_implicit_castable(a.elem, b) {
+						return t_invalid
+					}
+					return t1
+				}
+			}
+		}
+	}
+
+	// Non-commumative operations:
 	#partial switch left in left.derived {
 	case ^Type_Matrix:
 		#partial switch right in right.derived {
@@ -1450,14 +1486,6 @@ type_from_binary_op :: proc(left: ^Type, op: Token_Kind, right: ^Type) -> ^Type 
 				result.elem = right.elem
 				return result
 			}
-
-		case ^Type_Scalar:
-			if op_is_arithmetic(op) {
-				if !type_is_implicit_castable(left.elem, right) {
-					return t_invalid
-				}
-				return left
-			}
 		}
 
 	case ^Type_Vector:
@@ -1483,32 +1511,16 @@ type_from_binary_op :: proc(left: ^Type, op: Token_Kind, right: ^Type) -> ^Type 
 				}
 				return left
 			}
-
-		case ^Type_Scalar:
-			if op_is_arithmetic(op) {
-				if !type_is_implicit_castable(left.elem, right) {
+			if op_is_relation(op) {
+				if !type_eq(left, right) {
 					return t_invalid
 				}
-				return left
+				return bool_gen_from(left)
 			}
 		}
 
 	case ^Type_Scalar:
 		#partial switch right in right.derived {
-		case ^Type_Matrix:
-			if op_is_arithmetic(op) {
-				if !type_is_implicit_castable(left, right.elem) {
-					return t_invalid
-				}
-				return right
-			}
-		case ^Type_Vector:
-			if op_is_arithmetic(op) {
-				if !type_is_implicit_castable(left, right.elem) {
-					return t_invalid
-				}
-				return right
-			}
 		case ^Type_Scalar:
 			if op_is_arithmetic(op) {
 				if !type_is_implicit_castable(left, right) {

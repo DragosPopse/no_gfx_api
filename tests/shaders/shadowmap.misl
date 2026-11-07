@@ -58,7 +58,7 @@ frag :: proc "fragment"(
 
 	// Shadow maps use a comparison sampler so the hardware can PCF.
 	light := sample(data.shadow_texture, data.shadow_sampler, light_pos.xy, light_pos.z)
-	if light_pos.x < 0 || light_pos.y < 0 || light_pos.x > 1 || light_pos.y > 1 {
+	if any(light_pos.xy < 0) || any(light_pos.xy > 1) {
 		light = 0
 	}
 	light = max(light, 0.2)

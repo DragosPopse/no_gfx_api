@@ -200,6 +200,7 @@ logical_equal :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .Lo
 select :: proc(m: ^Module, ty, cond, a, b: Id) -> Id { return emit_typed_lit(m, .Select, ty, Word(cond), Word(a), Word(b)) }
 
 iequal :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .IEqual, type_bool(m), Word(a), Word(b)) }
+relation :: proc(m: ^Module, op: Op, ty, a, b: Id) -> Id { return emit_typed_lit(m, op, ty, Word(a), Word(b)) }
 inot_equal :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .INotEqual, type_bool(m), Word(a), Word(b)) }
 inot_equal_ty :: proc(m: ^Module, ty, a, b: Id) -> Id { return emit_typed_lit(m, .INotEqual, ty, Word(a), Word(b)) }
 
@@ -329,6 +330,8 @@ dpdy :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .DPdy, ty, 
 fwidth :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .Fwidth, ty, Word(a)) }
 is_nan :: proc(m: ^Module, a: Id) -> Id { return emit_typed_lit(m, .IsNan, type_bool(m), Word(a)) }
 is_inf :: proc(m: ^Module, a: Id) -> Id { return emit_typed_lit(m, .IsInf, type_bool(m), Word(a)) }
+all :: proc(m: ^Module, vector: Id) -> Id { return emit_typed_lit(m, .All, type_bool(m), Word(vector)) }
+any_ :: proc(m: ^Module, vector: Id) -> Id { return emit_typed_lit(m, .Any_, type_bool(m), Word(vector)) }
 
 call :: proc(m: ^Module, result_ty, fn: Id, args: []Id) -> Id {
 	ops := make([]Word, 1 + len(args), context.temp_allocator)

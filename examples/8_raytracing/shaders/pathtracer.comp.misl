@@ -187,7 +187,7 @@ pathtrace :: proc(#ref rng: u32, start_ray: Ray, tlas_id: bvh32, scene: Scene) -
 		outgoing := -ray.dir
 		rnd := random_vec2(&rng)
 		incoming := sample_matte(albedo_color, hit.normal, outgoing, rnd)
-		if incoming.x == 0 && incoming.y == 0 && incoming.z == 0 {
+		if all(incoming == 0) {
 			break
 		}
 
@@ -197,7 +197,7 @@ pathtrace :: proc(#ref rng: u32, start_ray: Ray, tlas_id: bvh32, scene: Scene) -
 		ray.ori += ray.dir * hit.t
 		ray.dir = incoming
 
-		if weight.x == 0 && weight.y == 0 && weight.z == 0 {
+		if all(weight == 0) {
 			break
 		}
 		if is_finite(weight) == false {

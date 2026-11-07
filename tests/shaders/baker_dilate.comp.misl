@@ -10,7 +10,7 @@ main :: proc "compute"(
 ) {
 	gid := i32x2(i32(gid3.x), i32(gid3.y))
 	tex_size := min(dim(data.output), dim(data.input))
-	if gid.x < 0 || gid.y < 0 || gid.x > tex_size.x || gid.y > tex_size.y do return
+	if any(gid < 0) || any(gid > tex_size) do return
 
 	src_color := load(data.input, gid)
 	if src_color.a > 0.5 {

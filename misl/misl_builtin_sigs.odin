@@ -353,6 +353,22 @@ _builtin_sigs_data :: [Builtin_Proc]Builtin_Sig_Info {
 		result_class = .Gen_Float,
 		docs = "Builds a floating-point value from significand x and integer power-of-two exponent.",
 	},
+	.all = {
+		kind = .Fixed,
+		params = []Builtin_Param_Info{
+			{name = "v", class = .Concrete, type_name = "bvec"},
+		},
+		result_class = .Concrete, result_type_name = "bool",
+		docs = "Returns true if all components of v are true; false otherwise."
+	},
+	.any = {
+		kind = .Fixed,
+		params = []Builtin_Param_Info{
+			{name = "v", class = .Concrete, type_name = "bvec"},
+		},
+		result_class = .Concrete, result_type_name = "bool",
+		docs = "Returns true if any one of the components of v is true; false otherwise."
+	},
 
 	// --- geometry ---------------------------------------------------------------
 	.mag = {

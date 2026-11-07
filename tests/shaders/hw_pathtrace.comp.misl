@@ -128,7 +128,7 @@ is_finite :: proc(v: f32x3) -> b32 {
 }
 
 all_zero :: proc(v: f32x3) -> b32 {
-	return v.x == 0 && v.y == 0 && v.z == 0
+	return all(v == 0)
 }
 
 ray_scene_intersection :: proc(ray: Ray, tlas_id: bvh32, scene: Scene) -> Hit_Info {

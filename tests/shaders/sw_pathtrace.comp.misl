@@ -147,7 +147,7 @@ ray_scene_intersection :: proc(ray: Ray) -> Hit_Info {
 }
 
 all_zero :: proc(v: f32x3) -> b32 {
-	return v.x == 0 && v.y == 0 && v.z == 0
+	return all(v == 0)
 }
 
 pathtrace :: proc(#ref rng: u32, start_ray: Ray) -> f32x3 {
