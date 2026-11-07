@@ -1017,7 +1017,7 @@ check_stmt :: proc(c: ^Checker, stmt: ^Stmt) -> (diverging: bool) {
 			check_err(c, d.pos, "expected %d values for return statement, got %d", n_results, return_index)
 		}
 		return true
-	
+
 	case ^If_Stmt:
 		last_scope := c.curr_scope
 		if d.init != nil {
@@ -1035,7 +1035,7 @@ check_stmt :: proc(c: ^Checker, stmt: ^Stmt) -> (diverging: bool) {
 			check_err(c, d.pos, "expected a boolean condition")
 		} else {
 			cond := check_expr(c, d.cond)
-			if !type_is_boolean(cond.type) {
+			if cond.type != t_invalid && !type_is_boolean(cond.type) {
 				check_err(c, d.cond.pos, "expected a boolean condition, got '%s'", string_from_type(cond.type))
 			}
 		}
@@ -1482,7 +1482,7 @@ expr_device_store_elem :: proc(expr: ^Expr) -> (elem: ^Type, ok: bool) {
 			#partial switch t in d.expr.tav.type.derived {
 			case ^Type_Pointer:
 				return t.elem, true // store to field through ^T counts as writing pointee type's... actually writing a field of the struct pointee
-				// For Ptr_RW of the struct type T when we do (^T).field = 
+				// For Ptr_RW of the struct type T when we do (^T).field =
 				// return t.elem, true marks struct T as "written" which upgrades T_Ptr — correct for ^T stores
 			case ^Type_Multi_Pointer, ^Type_Slice:
 				return nil, false
@@ -1838,7 +1838,7 @@ eval_const_binary_op :: proc(checker: ^Checker, lhs, rhs: Exact_Value, expr: ^Bi
 	case .Not_Eq: return l != r
 	case .Lt_Eq: return l <= r
 	case .Gt_Eq: return l >= r
-	case .Shl: 
+	case .Shl:
 		if r < 0 {
 			check_err(checker, expr.pos, "shift amount must be an unsigned integer")
 			return nil
@@ -1913,6 +1913,8 @@ Operand :: struct {
 
 check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = nil) -> (operand: Operand) {
 	operand.expr = expr
+	operand.type = t_invalid
+	operand.mode = .Invalid
 	defer {
 		expr.tav.type = operand.type
 		expr.tav.value = operand.value
@@ -1921,28 +1923,22 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 
 	#partial switch v in expr.derived {
 	case: check_err(checker, expr.pos, "unhandled expression: %v", reflect.union_variant_typeid(expr.derived_expr))
-		operand.mode = .Invalid
-		operand.type = t_invalid
 		return
 
 	case ^Bad_Expr:
 		// Incomplete / recovered parse while typing (soft_fail LSP).
-		operand.mode = .Invalid
-		operand.type = t_invalid
 		return
 
 	case ^Undef:
 		if type_hint == nil {
 			check_err(checker, expr.pos, "'---' requires a type context")
-			operand.mode = .Invalid
-			operand.type = t_invalid
 			return
 		}
 		operand.mode = .Value
 		operand.type = type_hint
 		// Marker for codegen: no Exact_Value and we'll set Entity_Flag.No_Init on the binding
 		return
-	
+
 	case ^Paren_Expr: return check_expr_internal(checker, v.expr, type_hint)
 	case ^Comp_Lit:
 		type: ^Type
@@ -1954,8 +1950,6 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 
 		if type == nil {
 			check_err(checker, v.pos, "missing type in compound literal")
-			operand.mode = .Invalid
-			operand.type = t_invalid
 			return
 		}
 
@@ -1972,6 +1966,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			mask: i128 = 0
 			for elem in v.elems {
 				e := check_expr(checker, elem, type_hint = t.elem)
+				if e.type == t_invalid do return
 				if e.mode != .Constant || e.value == nil {
 					check_err(checker, elem.pos, "bit_set compound literal elements must be constant")
 					operand.mode = .Value
@@ -2013,15 +2008,15 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 		}
 
 
-		
+
 	case ^Basic_Lit:
 		operand.mode = .Constant
-		
+
 		#partial switch v.tok.kind {
 		case .String:
 			operand.value = exact_string(unescape_misl_string(v.tok.text))
 			operand.type = t_untyped_string
-			
+
 		case .Rune:
 			r, rok := parse_rune_literal(v.tok.text)
 			if !rok {
@@ -2032,7 +2027,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			}
 			operand.value = exact_int(i128(r))
 			operand.type = t_untyped_rune
-			
+
 		case .Float:
 			number, ok := parse_misl_float_literal(v.tok.text)
 			if !ok {
@@ -2057,7 +2052,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 		}
 
 		/*
-		if type_hint != nil { // maybe this shouldn't be here 
+		if type_hint != nil { // maybe this shouldn't be here
 			if type_is_implicit_castable(operand.type, type_hint) {
 				operand.type = type_hint
 			} else {
@@ -2067,11 +2062,12 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			// operand.type = default_type(operand.type) // probably we should call default_type outside of this, in different places
 		}
 		*/
-		
-		
-		
+
+
+
 	case ^Unary_Expr:
 		inner := check_expr(checker, v.expr)
+		if inner.type == t_invalid do return
 		operand.mode = .Constant if inner.mode == .Constant else .Value
 		#partial switch v.op.kind {
 		case .Add, .Sub:
@@ -2131,7 +2127,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			}
 		}
 
-	
+
 	case ^Binary_Expr:
 		lhs, rhs: Operand
 		if v.op.kind == .In || v.op.kind == .Not_In {
@@ -2149,6 +2145,9 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				rhs_hint = nil
 			}
 			rhs = check_expr(checker, v.right, type_hint = rhs_hint)
+
+			if lhs.type == t_invalid || rhs.type == t_invalid do return
+
 			is_rune_arith := (v.op.kind == .Add || v.op.kind == .Sub) && (
 				(type_is_rune_value(lhs.type) && type_is_integer(rhs.type)) ||
 				(type_is_integer(lhs.type) && type_is_rune_value(rhs.type))
@@ -2224,11 +2223,13 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 
 	case ^Ternary_If_Expr:
 		cond := check_expr(checker, v.cond)
-		if !type_is_boolean(cond.type) {
+		if cond.type != t_invalid && !type_is_boolean(cond.type) {
 			check_err(checker, v.cond.pos, "expected a boolean condition in ternary, got '%s'", string_from_type(cond.type))
 		}
 		x := check_expr(checker, v.x, type_hint = type_hint)
 		y := check_expr(checker, v.y, type_hint = type_hint if type_hint != nil else x.type)
+
+		if x.type == t_invalid || y.type == t_invalid do return
 
 		convert_to_typed(checker, &x, type_hint if type_hint != nil else y.type)
 		convert_to_typed(checker, &y, type_hint if type_hint != nil else x.type)
@@ -2274,6 +2275,8 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 
 	case ^Ternary_When_Expr:
 		cond := check_expr(checker, v.cond)
+		if cond.type == t_invalid do return
+
 		if cond.mode != .Constant {
 			check_err(checker, v.cond.pos, "'when' expression condition must be a constant")
 			operand.mode = .Invalid
@@ -2313,7 +2316,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 		check_capture_rules(checker, expr.pos, e)
 		v.entity = e
 		operand.type = e.type
-		
+
 		#partial switch e.kind {
 		case .Constant:
 			if type_is_proc(e.type) && .Poly_Const in e.flags {
@@ -2403,15 +2406,11 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			v.field.tav.value = operand.value // TODO: make this nicer. Currently some ast nodes don't properly store the tav
 			v.field.tav.type = operand.type
 		}
-		
-	
+
+
 	case ^Selector_Expr:
 		lhs := check_expr_or_type(checker, v.expr)
-		if lhs.mode == .Invalid {
-			operand.mode = .Invalid
-			operand.type = t_invalid
-			return
-		}
+		if lhs.mode == .Invalid do return
 
 		// import.name → look up in imported module scope (builtin.sin, foo.Helper, …)
 		if lhs.mode == .Import {
@@ -2509,11 +2508,11 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 					check_err(checker, v.field.pos, "'%v' is not a valid swizzle index", char)
 					return
 				}
-				
+
 				if index >= cast(int)vec.len {
 					check_err(checker, v.field.pos, "'%v' swizzle index is larger than vector's size", char)
 				}
-				
+
 				if seen_index[index] {
 					duplicates = true
 				}
@@ -2584,7 +2583,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				return
 			}
 		}
-		
+
 		check_err(checker, v.pos, "expression of type '%v' has no field called '%s'", reflect.union_variant_type_info(lhs.type.derived), v.field.name)
 		return
 
@@ -2602,6 +2601,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				operand.value = converted
 			} else {
 				operand.mode = .Invalid
+				operand.type = t_invalid
 			}
 		} else {
 			operand.mode = .Value
@@ -2615,6 +2615,8 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			return
 		}
 		value := check_expr(checker, v.expr, type_hint = type_hint)
+		if value.type == t_invalid do return
+
 		if !type_is_castable(value.type, type_hint) {
 			check_err(checker, v.pos, "cannot auto_cast expression of type '%v' to '%v'", string_from_type(value.type), string_from_type(type_hint))
 			operand.mode = .Invalid
@@ -2652,7 +2654,6 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 		}
 		#partial switch fn.mode {
 		case .Invalid:
-			check_err(checker, fn.expr.pos, "expected a callable expression, got an invalid expression")
 			return
 		case .Builtin:
 			builtin := check_builtin(checker, v, fn.builtin_id, type_hint)
@@ -2662,7 +2663,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 			operand.type = builtin.type
 			operand.value = builtin.value
 
-		
+
 		case .Type:
 			if type_is_vector(fn.type) {
 				return_t := fn.type.derived.(^Type_Vector)
@@ -2690,7 +2691,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 						check_err(checker, arg.pos, "expression of type '%v' is incompatible with this vector constructor", string_from_type(o.type))
 						return
 					}
-					
+
 					// TODO: better error messaging
 					// we should split the constructor in each expression and tell the user what it evaluates to
 					if ctor_elems > return_vec_len {
@@ -2698,7 +2699,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 						return
 					}
 				}
-				
+
 				operand.mode = .Value
 				operand.type = return_t
 			} else if type_is_matrix(fn.type) { // allows (matrix[R, C]f32)(a, b, c, ....)
@@ -2709,7 +2710,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 					check_err(checker, v.pos, "matrix constructor expects either 1 or %d parameters, got %d", return_t.columns * return_t.rows, len(v.args))
 					break
 				}
-				
+
 				for arg in v.args {
 					op := check_expr(checker, arg, type_hint = return_t.elem)
 					_ = op
@@ -2725,7 +2726,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 					return
 				}
 				arg := check_expr(checker, v.args[0])
-				if !type_is_castable(arg.type, fn.type) && !type_is_implicit_castable(arg.type, fn.type) {
+				if arg.type != t_invalid && !type_is_castable(arg.type, fn.type) && !type_is_implicit_castable(arg.type, fn.type) {
 					check_err(checker, v.args[0].pos, "cannot cast '%s' to '%s'", string_from_type(arg.type), string_from_type(fn.type))
 					return
 				}
@@ -2747,7 +2748,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 				check_err(checker, fn.expr.pos, "casts not yet implemented for type '%s'", string_from_type(fn.type))
 				return
 			}
-		
+
 		case:
 			if proc_t, is_proc := fn.type.derived.(^Type_Proc); !is_proc {
 				check_err(checker, v.pos, "expected a procedure in call expression")
@@ -2980,6 +2981,7 @@ check_expr_internal :: proc(checker: ^Checker, expr: ^Expr, type_hint: ^Type = n
 
 	case ^Slice_Expr:
 		base := check_expr(checker, v.expr)
+		if base.type == t_invalid do return
 		#partial switch bt in base.type.derived {
 		case ^Type_Multi_Pointer:
 			// mp[:high] / mp[low:high] → []T
@@ -3493,7 +3495,7 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 	// Parent to current scope so nested procs see enclosing `::` bindings
 	type.scope = create_scope(c.curr_scope, .Proc)
 	type.scope.proc_type = type
-	
+
 	switch pt.calling_convention {
 	case "vertex", "vert", "vs": type.stage = .Vertex
 	case "fragment", "frag", "fs", "pixel", "ps": type.stage = .Fragment
@@ -3517,7 +3519,7 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 			allowed_results = Allowed_Semantics_Shader_Results
 		}
 	}
-	
+
 	type.params = check_field_list(c, type.scope, pt.params, allowed_params if type.stage != nil else nil, true, poly_operands, allow_using = true)
 	type.results = check_field_list(c, type.scope, pt.results, allowed_results if type.stage != nil else nil, false)
 	inject_param_using(c, type.params)
@@ -3527,7 +3529,7 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 			check_err(c, pt.pos, "compute shaders must not have results")
 		}
 	}
-	
+
 	if proc_is_generic_template(type) {
 		if type.is_fmag {
 			check_err(c, pt.pos, "proc \"fmag\" cannot be polymorphic")
@@ -3535,7 +3537,7 @@ check_proc_type :: proc(c: ^Checker, pt: ^Proc_Type, poly_operands: []Operand = 
 			check_err(c, pt.pos, "shader entry points cannot be polymorphic")
 		}
 	}
-	
+
 	if type.stage != nil {
 		seen_sem: Semantics
 		sem_infos := semantic_names
@@ -4024,7 +4026,7 @@ check_struct_type :: proc(c: ^Checker, st: ^Struct_Type) -> ^Type_Struct {
 	}
 
 	type.align = requested_align if requested_align != 0 else max_align
-	
+
 	{ // calculate field paddings and final struct size
 		offset := 0
 		for field in type.fields.variables {
@@ -4119,7 +4121,7 @@ check_enum_type :: proc(c: ^Checker, et: ^Enum_Type) -> ^Type {
 			ident.entity = const
 			scope_insert(et.scope, ident.entity)
 			append(&type.fields, const)
-			
+
 		}
 	}
 
@@ -4889,8 +4891,8 @@ check_array_type :: proc(c: ^Checker, at: ^Array_Type) -> ^Type {
 		if type_is_ray_query(elem_type) {
 			check_err(c, at.pos, "Ray_Query cannot be stored in an array")
 		}
-		
-	
+
+
 		if !at.force_array && 2 <= array_size && array_size <= 4 do switch elem_type {
 		case t_f32, t_i32, t_u32, t_b32:
 			type := new_type(Type_Vector)
