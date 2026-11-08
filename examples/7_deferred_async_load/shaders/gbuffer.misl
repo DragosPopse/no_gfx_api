@@ -20,7 +20,7 @@ VS_Out :: struct {
 	world_pos: vec4,
 }
 
-vs :: proc "vertex"(
+vert :: proc "vertex"(
 	vid: u32 | SV_Vertex,
 	data: ^Vert_Data | SV_Data,
 ) -> (out: VS_Out) {
@@ -52,7 +52,7 @@ GBuffer_Output :: struct {
 	metallic_roughness: vec4 | SV_Target,
 }
 
-fs :: proc "fragment"(
+frag :: proc "fragment"(
 	input: VS_Out,
 	data: ^Frag_Data | SV_Data,
 ) -> (out: GBuffer_Output) {

@@ -53,7 +53,7 @@ raymarch :: proc(data: ^Data, gid: vec3) -> vec4 {
 }
 
 @(size = {8, 8})
-cs :: proc "compute"(
+comp :: proc "compute"(
 	data: ^Data | SV_Data,
 	gid: [3]u32 | SV_Global_Thread,
 ) {

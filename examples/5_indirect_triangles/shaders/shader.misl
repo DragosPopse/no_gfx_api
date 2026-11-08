@@ -27,7 +27,7 @@ VS_Out :: struct {
 	color: vec4,
 }
 
-vs :: proc "vertex"(
+vert :: proc "vertex"(
 	vid: u32 | SV_Vertex,
 	data: ^Data | SV_Data,
 	args: ^IndirectData | SV_Indirect_Data,
@@ -37,7 +37,7 @@ vs :: proc "vertex"(
 	return out
 }
 
-fs :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
+frag :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
 	out = input.color
 	return out
 }

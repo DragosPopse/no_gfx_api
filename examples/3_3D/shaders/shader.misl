@@ -17,7 +17,7 @@ VS_Out :: struct {
 	world_normal: vec4,
 }
 
-vs :: proc "vertex"(
+vert :: proc "vertex"(
 	vid: u32 | SV_Vertex,
 	data: ^Data | SV_Data,
 ) -> (out: VS_Out) {
@@ -32,7 +32,7 @@ vs :: proc "vertex"(
 	return out
 }
 
-fs :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
+frag :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
 	n := normalize(input.world_normal.xyz)
 	out = vec4(n * 0.5 + 0.5, 1)
 	return out

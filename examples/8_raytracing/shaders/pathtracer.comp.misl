@@ -216,7 +216,7 @@ pathtrace :: proc(#ref rng: u32, start_ray: Ray, tlas_id: bvh32, scene: Scene) -
 }
 
 @(size = {8, 8})
-cs :: proc "compute"(
+comp :: proc "compute"(
 	data: ^Data | SV_Data,
 	gid: [3]u32 | SV_Global_Thread,
 ) {
