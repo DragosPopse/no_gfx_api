@@ -1,39 +1,37 @@
-vec2 :: [2]f32
-vec3 :: [3]f32
-vec4 :: [4]f32
-mat4 :: matrix[4, 4]f32
+WORLD_NORMAL :: #inout(f32x4, 0)
 
-Data :: struct {
-	positions:             [^]vec4,
-	normals:               [^]vec4,
-	model_to_world:        mat4,
-	model_to_world_normal: mat4,
-	world_to_view:         mat4,
-	view_to_proj:          mat4,
+Data :: struct
+{
+    positions:             [^]f32x4,
+    normals:               [^]f32x4,
+    model_to_world:        f32x4x4,
+    model_to_world_normal: f32x4x4,
+    world_to_view:         f32x4x4,
+    view_to_proj:          f32x4x4,
 }
 
-VS_Out :: struct {
-	pos:          vec4 | SV_Position,
-	world_normal: vec4,
+VS_Out :: struct
+{
+    pos:          f32x4 | SV_Position,
+    world_normal: f32x4 | WORLD_NORMAL,
 }
 
-vert :: proc "vertex"(
-	vid: u32 | SV_Vertex,
-	data: ^Data | SV_Data,
-) -> (out: VS_Out) {
-	clip_pos := vec4(data.positions[vid].xyz, 1)
-	clip_pos = data.model_to_world * clip_pos
-	clip_pos = data.world_to_view * clip_pos
-	clip_pos = data.view_to_proj * clip_pos
-	clip_pos.y = 0 - clip_pos.y
+vert :: proc "vertex"(vid: u32 | SV_Vertex, data: ^Data | SV_Data) -> (out: VS_Out)
+{
+    clip_pos := f32x4(data.positions[vid].xyz, 1)
+    clip_pos = data.model_to_world * clip_pos
+    clip_pos = data.world_to_view * clip_pos
+    clip_pos = data.view_to_proj * clip_pos
+    clip_pos.y = 0 - clip_pos.y
 
-	out.pos = clip_pos
-	out.world_normal = data.model_to_world_normal * data.normals[vid]
-	return out
+    out.pos = clip_pos
+    out.world_normal = data.model_to_world_normal * data.normals[vid]
+    return out
 }
 
-frag :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
-	n := normalize(input.world_normal.xyz)
-	out = vec4(n * 0.5 + 0.5, 1)
-	return out
+frag :: proc "fragment"(input: VS_Out) -> (out: f32x4 | SV_Target)
+{
+    n := normalize(input.world_normal.xyz)
+    out = f32x4(n * 0.5 + 0.5, 1)
+    return out
 }

@@ -1,35 +1,34 @@
-
 import "core:debug.misl"
 
-vec2 :: [2]f32
-vec3 :: [3]f32
-vec4 :: [4]f32
+COLOR :: #inout(f32x4, 0)
 
-Vertex :: struct {
-	pos:   vec3,
-	color: vec3,
+Vertex :: struct
+{
+    pos:   f32x3,
+    color: f32x3,
 }
 
-Data :: struct {
-	verts: [^]Vertex,
+Data :: struct
+{
+    verts: [^]Vertex,
 }
 
-VS_Out :: struct {
-	pos:   vec4 | SV_Position,
-	color: vec4,
+VS_Out :: struct
+{
+    pos:   f32x4 | SV_Position,
+    color: f32x4 | COLOR,
 }
 
-vert :: proc "vertex"(
-	vid: u32 | SV_Vertex,
-	data: ^Data | SV_Data,
-) -> (out: VS_Out) {
-	v := data.verts[vid]
-	out.pos = vec4(v.pos, 1)
-	out.color = vec4(v.color, 1)
-	return out
+vert :: proc "vertex"(vid: u32 | SV_Vertex, data: ^Data | SV_Data) -> (out: VS_Out)
+{
+    v := data.verts[vid]
+    out.pos = f32x4(v.pos, 1)
+    out.color = f32x4(v.color, 1)
+    return out
 }
 
-frag :: proc "fragment"(input: VS_Out) -> (out: vec4 | SV_Target) {
-	out = input.color
-	return out
+frag :: proc "fragment"(input: VS_Out) -> (out: f32x4 | SV_Target)
+{
+    out = input.color
+    return out
 }
