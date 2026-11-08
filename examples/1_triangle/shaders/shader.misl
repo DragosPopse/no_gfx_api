@@ -1,4 +1,3 @@
-import "core:debug.misl"
 
 COLOR :: #inout(f32x4, 0)
 
