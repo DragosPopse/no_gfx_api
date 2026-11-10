@@ -288,25 +288,20 @@ spv_wave_rvalue :: proc(cg: ^Spv_CG, id: Builtin_Proc, call: ^Call_Expr) -> spv.
 	case .wave_lane_id:
 		return spv_wave_load_builtin(cg, .SubgroupLocalInvocationId, "gl_SubgroupInvocationID")
 	case .wave_is_first:
-		b := spv.group_non_uniform_elect(&cg.m, spv.type_bool(&cg.m), scope)
-		return spv_from_bool(cg, b, res_t)
+		return spv.group_non_uniform_elect(&cg.m, spv.type_bool(&cg.m), scope)
 	case .wave_any, .wave_all:
 		pred := spv_as_bool(cg, spv_rvalue(cg, call.args[0]), call.args[0].tav.type)
-		b: spv.Id
 		if id == .wave_any {
-			b = spv.group_non_uniform_any(&cg.m, spv.type_bool(&cg.m), scope, pred)
-		} else {
-			b = spv.group_non_uniform_all(&cg.m, spv.type_bool(&cg.m), scope, pred)
+			return spv.group_non_uniform_any(&cg.m, spv.type_bool(&cg.m), scope, pred)
 		}
-		return spv_from_bool(cg, b, res_t)
+		return spv.group_non_uniform_all(&cg.m, spv.type_bool(&cg.m), scope, pred)
 	case .wave_ballot:
 		pred := spv_as_bool(cg, spv_rvalue(cg, call.args[0]), call.args[0].tav.type)
 		return spv.group_non_uniform_ballot(&cg.m, ty, scope, pred)
 	case .wave_all_equal:
 		v := spv_rvalue(cg, call.args[0])
 		bty := spv_bool_type(cg, res_t)
-		b := spv.group_non_uniform_all_equal(&cg.m, bty, scope, v)
-		return spv_from_bool(cg, b, res_t)
+		return spv.group_non_uniform_all_equal(&cg.m, bty, scope, v)
 	case .wave_bit_count, .wave_prefix_bit_count:
 		pred := spv_as_bool(cg, spv_rvalue(cg, call.args[0]), call.args[0].tav.type)
 		uvec4 := spv.type_vector(&cg.m, spv.type_u32(&cg.m), 4)

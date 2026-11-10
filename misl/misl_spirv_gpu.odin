@@ -349,7 +349,7 @@ spv_builtin_var :: proc(cg: ^Spv_CG, builtin: spv.Built_In, ty: spv.Id, name: st
 }
 
 spv_io_var :: proc(cg: ^Spv_CG, field: ^Entity, location: u32, sc: spv.Storage_Class, prefix: string) -> spv.Id {
-	ty := spv_type(cg, field.type)
+	ty := spv_access_ty(cg, field.type, sc, false)
 	pty := spv.type_pointer(&cg.m, sc, ty)
 	v := spv.global_var(&cg.m, pty, sc)
 	spv.decorate(&cg.m, v, .Location, location)
@@ -375,7 +375,8 @@ spv_emit_entry_io :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 	}
 	if pt.shared_vars != nil {
 		for var in pt.shared_vars {
-			pty := spv_ptr_ty(cg, .Workgroup, var.type)
+			pointee := spv_access_ty(cg, var.type, .Workgroup, false)
+			pty := spv.type_pointer(&cg.m, .Workgroup, pointee)
 			id := spv.global_var(&cg.m, pty, .Workgroup)
 			spv.name(&cg.m, id, var.name)
 			spv_bind_entity(cg, var, id, .Workgroup)
@@ -528,13 +529,13 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 		loc := spv_fn_var(cg, param.type, param.name, pos = param.pos)
 		spv_bind_entity(cg, param, loc, .Function)
 		if !is_struct {
-			spv.store(&cg.m, loc, spv.load(&cg.m, spv_type(cg, param.type), src))
+			spv.store(&cg.m, loc, spv_load_mem(cg, src, param.type, .Input, false, 0))
 			continue
 		}
 		parts := make([]spv.Id, len(st.fields.variables), context.temp_allocator)
 		for field, i in st.fields.variables {
 			if src := cg.entities[field].ptr; src != spv.NONE {
-				parts[i] = spv.load(&cg.m, spv_type(cg, field.type), src)
+				parts[i] = spv_load_mem(cg, src, field.type, .Input, false, 0)
 			} else {
 				parts[i] = spv_zero(cg, field.type)
 			}
@@ -565,6 +566,9 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 			member = 2
 		}
 		val := spv_pc_load_member(cg, member, spv_type(cg, v.type, .Stored))
+		if spv_type_has_bool(v.type) {
+			val = spv_change_layout(cg, val, v.type, .Stored, .Func)
+		}
 		loc := spv_fn_var(cg, v.type, v.name, pos = v.pos)
 		spv.store(&cg.m, loc, val)
 		spv_bind_entity(cg, v, loc, .Function)
@@ -700,7 +704,7 @@ spv_assert_try_claim :: proc(cg: ^Spv_CG) -> spv.Id {
 	spv.selection_merge(&cg.m, merge)
 	spv.branch_cond(&cg.m, take, then_b, else_b)
 	spv_block(cg, else_b)
-	spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, false), t_b32))
+	spv.store(&cg.m, tmp, spv.const_bool(&cg.m, false))
 	spv.branch(&cg.m, merge)
 	spv_block(cg, then_b)
 	fired_p := spv_assert_member_ptr(cg, rec, 0, spv.type_u32(&cg.m))
@@ -719,10 +723,10 @@ spv_assert_try_claim :: proc(cg: ^Spv_CG) -> spv.Id {
 	spv_block(cg, fail_b)
 	ov_p := spv_assert_member_ptr(cg, rec, 1, spv.type_u32(&cg.m))
 	_ = spv.atomic_iadd(&cg.m, spv.type_u32(&cg.m), ov_p, scope, eq_sem, one)
-	spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, false), t_b32))
+	spv.store(&cg.m, tmp, spv.const_bool(&cg.m, false))
 	spv.branch(&cg.m, inner)
 	spv_block(cg, ok_b)
-	spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, true), t_b32))
+	spv.store(&cg.m, tmp, spv.const_bool(&cg.m, true))
 	spv.branch(&cg.m, inner)
 	spv_block(cg, inner)
 	spv.branch(&cg.m, merge)
@@ -1193,6 +1197,16 @@ spv_printf_scalar :: proc(cg: ^Spv_CG, t: ^Type, v: spv.Id) -> (spec: string, ou
 	if type_eq(t, t_i32) {
 		return "%d", v, true
 	}
+	if type_is_boolean(t) {
+		bits := spv_from_bool(cg, v, t)
+		if type_sizeof(t) > 4 {
+			return "%lu", bits, true
+		}
+		if type_sizeof(t) < 4 {
+			return "%u", spv.uconvert(&cg.m, spv.type_u32(&cg.m), bits), true
+		}
+		return "%u", bits, true
+	}
 	if type_eq(t, t_u32) || type_eq(t, t_b32) {
 		return "%u", v, true
 	}
@@ -1490,8 +1504,7 @@ spv_ray_query_hit :: proc(cg: ^Spv_CG, call: ^Call_Expr, committed: bool) -> spv
 		case "barycentrics":
 			parts[i] = spv.ray_query_get_intersection_barycentrics(&cg.m, rq, c)
 		case "front_face":
-			b := spv.ray_query_get_intersection_front_face(&cg.m, rq, c)
-			parts[i] = spv_from_bool(cg, b, field.type)
+			parts[i] = spv.ray_query_get_intersection_front_face(&cg.m, rq, c)
 		case "object_to_world":
 			parts[i] = spv.ray_query_get_object_to_world(&cg.m, spv_type(cg, field.type), rq, c)
 		case "world_to_object":

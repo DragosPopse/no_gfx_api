@@ -253,8 +253,9 @@ spv_assign :: proc(cg: ^Spv_CG, v: ^Assign_Stmt) {
 		cur := spv_load_ptr(cg, l)
 		lb := spv_as_bool(cg, cur, l.type)
 		rb := spv_as_bool(cg, rhs, v.rhs[0].tav.type)
-		b := spv.logical_and(&cg.m, lb, rb) if v.op.kind == .Cmp_And_Eq else spv.logical_or(&cg.m, lb, rb)
-		spv_store_ptr(cg, l, spv_from_bool(cg, b, l.type))
+		bty := spv_bool_type(cg, l.type)
+		b := spv.logical_and_ty(&cg.m, bty, lb, rb) if v.op.kind == .Cmp_And_Eq else spv.logical_or_ty(&cg.m, bty, lb, rb)
+		spv_store_ptr(cg, l, b)
 	}
 }
 
@@ -668,11 +669,11 @@ spv_switch_bool :: proc(cg: ^Spv_CG, v: ^Switch_Stmt) {
 		spv.selection_merge(&cg.m, else_b)
 		spv.branch_cond(&cg.m, take, then_b, else_b)
 		spv_block(cg, then_b)
-		spv.store(&cg.m, matched_ptr, spv_from_bool(cg, spv.const_bool(&cg.m, true), t_b32))
-		spv.store(&cg.m, fall_ptr, spv_from_bool(cg, spv.const_bool(&cg.m, false), t_b32))
+		spv.store(&cg.m, matched_ptr, spv.const_bool(&cg.m, true))
+		spv.store(&cg.m, fall_ptr, spv.const_bool(&cg.m, false))
 		for s in clause.body {
 			if stmt_is_fallthrough(s) {
-				spv.store(&cg.m, fall_ptr, spv_from_bool(cg, spv.const_bool(&cg.m, true), t_b32))
+				spv.store(&cg.m, fall_ptr, spv.const_bool(&cg.m, true))
 				continue
 			}
 			spv_stmt(cg, s)

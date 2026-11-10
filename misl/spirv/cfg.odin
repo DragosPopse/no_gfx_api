@@ -196,6 +196,10 @@ bitcount :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .BitCou
 logical_or :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalOr, type_bool(m), Word(a), Word(b)) }
 logical_and :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalAnd, type_bool(m), Word(a), Word(b)) }
 logical_not :: proc(m: ^Module, a: Id) -> Id { return emit_typed_lit(m, .LogicalNot, type_bool(m), Word(a)) }
+logical_or_ty :: proc(m: ^Module, ty, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalOr, ty, Word(a), Word(b)) }
+logical_and_ty :: proc(m: ^Module, ty, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalAnd, ty, Word(a), Word(b)) }
+logical_not_ty :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .LogicalNot, ty, Word(a)) }
+logical_not_equal_ty :: proc(m: ^Module, ty, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalNotEqual, ty, Word(a), Word(b)) }
 logical_equal :: proc(m: ^Module, a, b: Id) -> Id { return emit_typed_lit(m, .LogicalEqual, type_bool(m), Word(a), Word(b)) }
 select :: proc(m: ^Module, ty, cond, a, b: Id) -> Id { return emit_typed_lit(m, .Select, ty, Word(cond), Word(a), Word(b)) }
 
@@ -330,6 +334,8 @@ dpdy :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .DPdy, ty, 
 fwidth :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .Fwidth, ty, Word(a)) }
 is_nan :: proc(m: ^Module, a: Id) -> Id { return emit_typed_lit(m, .IsNan, type_bool(m), Word(a)) }
 is_inf :: proc(m: ^Module, a: Id) -> Id { return emit_typed_lit(m, .IsInf, type_bool(m), Word(a)) }
+is_nan_ty :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .IsNan, ty, Word(a)) }
+is_inf_ty :: proc(m: ^Module, ty, a: Id) -> Id { return emit_typed_lit(m, .IsInf, ty, Word(a)) }
 all :: proc(m: ^Module, vector: Id) -> Id { return emit_typed_lit(m, .All, type_bool(m), Word(vector)) }
 any_ :: proc(m: ^Module, vector: Id) -> Id { return emit_typed_lit(m, .Any_, type_bool(m), Word(vector)) }
 

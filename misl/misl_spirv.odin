@@ -56,6 +56,7 @@ Spv_Bindless :: struct {
 Spv_Type_Info :: struct {
 	fn:     spv.Id,
 	stored: spv.Id,
+	bits:   spv.Id, // function shape, boolean leaves kept as integers (workgroup / IO)
 	psb_ro: Spv_Psb,
 	psb_rw: Spv_Psb,
 }
@@ -582,7 +583,7 @@ spv_type_cache :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout, id: spv.Id)
 spv_type_uncached :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout) -> spv.Id {
 	#partial switch t in type.derived {
 	case ^Type_Scalar:
-		return spv_scalar_type(cg, t)
+		return spv_scalar_type(cg, t, layout)
 	case ^Type_Enum:
 		return spv_type(cg, t.base_type, layout)
 	case ^Type_Bit_Set:
@@ -623,7 +624,10 @@ spv_type_uncached :: proc(cg: ^Spv_CG, type: ^Type, layout: Spv_Layout) -> spv.I
 	return spv.type_u32(&cg.m)
 }
 
-spv_scalar_type :: proc(cg: ^Spv_CG, s: ^Type_Scalar) -> spv.Id {
+spv_scalar_type :: proc(cg: ^Spv_CG, s: ^Type_Scalar, layout: Spv_Layout) -> spv.Id {
+	if .Boolean in s.flags && layout == .Func {
+		return spv.type_bool(&cg.m)
+	}
 	if .Float in s.flags {
 		if s.size == 8 {
 			return spv.type_f64(&cg.m)
@@ -918,6 +922,12 @@ spv_change_layout :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type, from, to: Spv_Lay
 		n := spv.composite_extract(&cg.m, spv.type_i64(&cg.m), v, 1)
 		return spv.composite_construct(&cg.m, spv_slice_type(cg, t.elem, to, rw), {p, n})
 	}
+	if spv_bool_value(type) {
+		if to == .Stored {
+			return spv_from_bool(cg, v, type)
+		}
+		return spv_bits_to_bool(cg, v, type)
+	}
 	return v
 }
 
@@ -926,6 +936,9 @@ spv_zero :: proc(cg: ^Spv_CG, type: ^Type) -> spv.Id {
 	ty := spv_type(cg, type)
 	#partial switch t in type.derived {
 	case ^Type_Scalar, ^Type_Enum, ^Type_Bit_Set:
+		if type_is_boolean(type_base(type)) && !type_is_untyped(type_base(type)) {
+			return spv.const_bool(&cg.m, false)
+		}
 		if type_is_float(type_base(type)) {
 			if type_sizeof(type_base(type)) == 8 {
 				return spv.const_f64(&cg.m, 0)
@@ -1007,10 +1020,6 @@ spv_const_value :: proc(cg: ^Spv_CG, type: ^Type, value: Exact_Value) -> spv.Id 
 	}
 	#partial switch v in value {
 	case bool:
-		if type_is_boolean(type) && !type_is_untyped(type) {
-			bits := u64(1 if v else 0)
-			return spv.const_int(&cg.m, ty, bits, u32(type_sizeof(type)*8))
-		}
 		return spv.const_bool(&cg.m, v)
 	case i128:
 		if type_is_float(type_base(type)) {
@@ -1110,27 +1119,235 @@ spv_splat :: proc(cg: ^Spv_CG, type: ^Type, scalar: spv.Id) -> spv.Id {
 	return scalar
 }
 
-spv_load_ptr :: proc(cg: ^Spv_CG, l: Spv_Lval) -> spv.Id {
-	if len(l.swizzle) > 0 && l.vec != nil {
-		full := spv.load(&cg.m, spv_type(cg, l.vec), l.ptr)
-		return spv_swizzle_extract(cg, full, l.vec, spv_swizzle_name(l.swizzle), l.type)
+spv_bool_value :: proc(type: ^Type) -> bool {
+	type := default_type(type)
+	elem, n := type_gen_break(type)
+	return n >= 1 && elem != nil && type_is_boolean(elem) && !type_is_untyped(elem)
+}
+
+spv_bool_int_type :: proc(type: ^Type) -> ^Type {
+	type := default_type(type)
+	elem, n := type_gen_break(type)
+	int_elem := t_u32
+	if elem != nil {
+		switch type_sizeof(elem) {
+		case 1:
+			int_elem = t_u8
+		case 2:
+			int_elem = t_u16
+		case 8:
+			int_elem = t_u64
+		}
 	}
-	ty := spv_type(cg, l.type, .Stored if l.aligned else .Func)
+	if n <= 1 {
+		return int_elem
+	}
+	return vec_type(int_elem, n)
+}
+
+spv_type_has_bool :: proc(type: ^Type) -> bool {
+	type := default_type(type)
+	if type == nil do return false
+	if spv_bool_value(type) do return true
+	#partial switch t in type.derived {
+	case ^Type_Array:
+		return spv_type_has_bool(t.elem)
+	case ^Type_Struct:
+		if t.fields == nil do return false
+		for f in t.fields.variables {
+			if f != nil && spv_type_has_bool(f.type) do return true
+		}
+	}
+	return false
+}
+
+spv_storage_class_requires_sized_bool :: proc(sc: spv.Storage_Class) -> bool {
+	return sc != .Function && sc != .Private && sc != .PhysicalStorageBuffer
+}
+
+spv_bool_bits_type :: proc(cg: ^Spv_CG, type: ^Type) -> spv.Id {
+	type := default_type(type)
+	elem, n := type_gen_break(type)
+	bits: u32 = 32
+	if elem != nil && type_sizeof(elem) > 0 {
+		bits = u32(type_sizeof(elem) * 8)
+	}
+	ity := spv.type_int(&cg.m, bits, false)
+	if n <= 1 do return ity
+	return spv.type_vector(&cg.m, ity, u32(n))
+}
+
+spv_mem_type :: proc(cg: ^Spv_CG, type: ^Type) -> spv.Id {
+	type := default_type(type)
+	if !spv_type_has_bool(type) {
+		return spv_type(cg, type)
+	}
+	if spv_bool_value(type) {
+		return spv_bool_bits_type(cg, type)
+	}
+	info := cg.types[type]
+	if info.bits != spv.NONE {
+		return info.bits
+	}
+	id := spv_mem_type_build(cg, type)
+	info = cg.types[type]
+	info.bits = id
+	cg.types[type] = info
+	return id
+}
+
+spv_mem_type_build :: proc(cg: ^Spv_CG, type: ^Type) -> spv.Id {
+	#partial switch t in type.derived {
+	case ^Type_Array:
+		n := spv.const_u32(&cg.m, u32(t.len))
+		return spv.type_array(&cg.m, spv_mem_type(cg, t.elem), n, 0)
+	case ^Type_Struct:
+		n := 0
+		if t.fields != nil {
+			n = len(t.fields.variables)
+		}
+		members := make([]spv.Id, max(n, 1), context.temp_allocator)
+		if n == 0 {
+			members[0] = spv.type_u32(&cg.m)
+		} else {
+			for field, i in t.fields.variables {
+				members[i] = spv_mem_type(cg, field.type)
+			}
+		}
+		id := spv.type_struct(&cg.m, members, fmt.tprintf("bm:%p", type))
+		spv.name(&cg.m, id, spv_type_debug_name(type))
+		return id
+	}
+	return spv_bool_bits_type(cg, type)
+}
+
+spv_access_ty :: proc(cg: ^Spv_CG, type: ^Type, sc: spv.Storage_Class, aligned: bool) -> spv.Id {
+	if aligned || sc == .PhysicalStorageBuffer {
+		return spv_type(cg, type, .Stored)
+	}
+	if spv_storage_class_requires_sized_bool(sc) && spv_type_has_bool(type) {
+		return spv_mem_type(cg, type)
+	}
+	return spv_type(cg, type)
+}
+
+spv_bits_to_bool :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type) -> spv.Id {
+	type := default_type(type)
+	elem, n := type_gen_break(type)
+	bits: u32 = 32
+	if elem != nil && type_sizeof(elem) > 0 {
+		bits = u32(type_sizeof(elem) * 8)
+	}
+	ity := spv.type_int(&cg.m, bits, false)
+	z := spv.const_int(&cg.m, ity, 0, bits)
+	if n > 1 {
+		parts := make([]spv.Id, n, context.temp_allocator)
+		for i in 0 ..< n {
+			parts[i] = z
+		}
+		z = spv.composite_construct(&cg.m, spv.type_vector(&cg.m, ity, u32(n)), parts)
+	}
+	return spv.inot_equal_ty(&cg.m, spv_bool_type(cg, type), v, z)
+}
+
+spv_import_bool :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type) -> spv.Id {
+	type := default_type(type)
+	if spv_bool_value(type) {
+		return spv_bits_to_bool(cg, v, type)
+	}
+	#partial switch t in type.derived {
+	case ^Type_Struct:
+		n := 0
+		if t.fields != nil {
+			n = len(t.fields.variables)
+		}
+		parts := make([]spv.Id, n, context.temp_allocator)
+		for field, i in t.fields.variables {
+			ex := spv.composite_extract(&cg.m, spv_mem_type(cg, field.type), v, u32(i))
+			parts[i] = spv_import_bool(cg, ex, field.type)
+		}
+		return spv.composite_construct(&cg.m, spv_type(cg, type), parts)
+	case ^Type_Array:
+		parts := make([]spv.Id, t.len, context.temp_allocator)
+		for i in 0 ..< t.len {
+			ex := spv.composite_extract(&cg.m, spv_mem_type(cg, t.elem), v, u32(i))
+			parts[i] = spv_import_bool(cg, ex, t.elem)
+		}
+		return spv.composite_construct(&cg.m, spv_type(cg, type), parts)
+	}
+	return v
+}
+
+spv_export_bool :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type) -> spv.Id {
+	type := default_type(type)
+	if spv_bool_value(type) {
+		return spv_from_bool(cg, v, type)
+	}
+	#partial switch t in type.derived {
+	case ^Type_Struct:
+		n := 0
+		if t.fields != nil {
+			n = len(t.fields.variables)
+		}
+		parts := make([]spv.Id, n, context.temp_allocator)
+		for field, i in t.fields.variables {
+			ex := spv.composite_extract(&cg.m, spv_type(cg, field.type), v, u32(i))
+			parts[i] = spv_export_bool(cg, ex, field.type)
+		}
+		return spv.composite_construct(&cg.m, spv_mem_type(cg, type), parts)
+	case ^Type_Array:
+		parts := make([]spv.Id, t.len, context.temp_allocator)
+		for i in 0 ..< t.len {
+			ex := spv.composite_extract(&cg.m, spv_type(cg, t.elem), v, u32(i))
+			parts[i] = spv_export_bool(cg, ex, t.elem)
+		}
+		return spv.composite_construct(&cg.m, spv_mem_type(cg, type), parts)
+	}
+	return v
+}
+
+spv_load_mem :: proc(cg: ^Spv_CG, ptr: spv.Id, type: ^Type, sc: spv.Storage_Class, aligned: bool, align: u32) -> spv.Id {
+	ty := spv_access_ty(cg, type, sc, aligned)
 	loaded: spv.Id
-	if l.aligned {
-		loaded = spv.load_aligned(&cg.m, ty, l.ptr, l.align if l.align != 0 else spv_align_of(l.type))
+	if aligned {
+		loaded = spv.load_aligned(&cg.m, ty, ptr, align if align != 0 else spv_align_of(type))
 	} else {
-		loaded = spv.load(&cg.m, ty, l.ptr)
+		loaded = spv.load(&cg.m, ty, ptr)
 	}
-	if l.aligned && l.sc == .PhysicalStorageBuffer {
-		return spv_change_layout(cg, loaded, l.type, .Stored, .Func)
+	if aligned && sc == .PhysicalStorageBuffer {
+		return spv_change_layout(cg, loaded, type, .Stored, .Func)
+	}
+	if spv_storage_class_requires_sized_bool(sc) && spv_type_has_bool(type) {
+		return spv_import_bool(cg, loaded, type)
 	}
 	return loaded
 }
 
+spv_store_mem :: proc(cg: ^Spv_CG, ptr: spv.Id, type: ^Type, sc: spv.Storage_Class, aligned: bool, align: u32, val: spv.Id) {
+	stored := val
+	if aligned && sc == .PhysicalStorageBuffer {
+		stored = spv_change_layout(cg, val, type, .Func, .Stored)
+	} else if spv_storage_class_requires_sized_bool(sc) && spv_type_has_bool(type) {
+		stored = spv_export_bool(cg, val, type)
+	}
+	if aligned {
+		spv.store_aligned(&cg.m, ptr, stored, align if align != 0 else spv_align_of(type))
+		return
+	}
+	spv.store(&cg.m, ptr, stored)
+}
+
+spv_load_ptr :: proc(cg: ^Spv_CG, l: Spv_Lval) -> spv.Id {
+	if len(l.swizzle) > 0 && l.vec != nil {
+		full := spv_load_mem(cg, l.ptr, l.vec, l.sc, l.aligned, l.align)
+		return spv_swizzle_extract(cg, full, l.vec, spv_swizzle_name(l.swizzle), l.type)
+	}
+	return spv_load_mem(cg, l.ptr, l.type, l.sc, l.aligned, l.align)
+}
+
 spv_store_ptr :: proc(cg: ^Spv_CG, l: Spv_Lval, val: spv.Id) {
 	if len(l.swizzle) > 0 && l.vec != nil {
-		full := spv.load(&cg.m, spv_type(cg, l.vec), l.ptr)
+		full := spv_load_mem(cg, l.ptr, l.vec, l.sc, l.aligned, l.align)
 		vt := l.vec.derived.(^Type_Vector)
 		cur := full
 		if len(l.swizzle) == 1 {
@@ -1142,22 +1359,10 @@ spv_store_ptr :: proc(cg: ^Spv_CG, l: Spv_Lval, val: spv.Id) {
 				cur = spv.composite_insert(&cg.m, spv_type(cg, l.vec), part, cur, c)
 			}
 		}
-		if l.aligned {
-			spv.store_aligned(&cg.m, l.ptr, cur, l.align if l.align != 0 else spv_align_of(l.vec))
-		} else {
-			spv.store(&cg.m, l.ptr, cur)
-		}
+		spv_store_mem(cg, l.ptr, l.vec, l.sc, l.aligned, l.align, cur)
 		return
 	}
-	stored := val
-	if l.aligned && l.sc == .PhysicalStorageBuffer {
-		stored = spv_change_layout(cg, val, l.type, .Func, .Stored)
-	}
-	if l.aligned {
-		spv.store_aligned(&cg.m, l.ptr, stored, l.align if l.align != 0 else spv_align_of(l.type))
-		return
-	}
-	spv.store(&cg.m, l.ptr, stored)
+	spv_store_mem(cg, l.ptr, l.type, l.sc, l.aligned, l.align, val)
 }
 
 spv_swizzle_name :: proc(comps: []u32) -> string {
@@ -1179,9 +1384,12 @@ spv_bool_type :: proc(cg: ^Spv_CG, type: ^Type) -> spv.Id {
 
 spv_as_bool :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type) -> spv.Id {
 	t := default_type(type)
+	if spv_bool_value(t) {
+		return v
+	}
 	elem, n := type_gen_break(t)
 	_ = n
-	if elem != nil && (type_is_boolean(elem) || type_is_integer(elem) || type_is_enum(elem) || type_is_bit_set(elem)) {
+	if elem != nil && (type_is_integer(elem) || type_is_enum(elem) || type_is_bit_set(elem)) {
 		z := spv_zero(cg, t)
 		return spv.inot_equal_ty(&cg.m, spv_bool_type(cg, t), v, z)
 	}
@@ -1190,22 +1398,36 @@ spv_as_bool :: proc(cg: ^Spv_CG, v: spv.Id, type: ^Type) -> spv.Id {
 
 spv_from_bool :: proc(cg: ^Spv_CG, b: spv.Id, type: ^Type) -> spv.Id {
 	type := default_type(type)
-	elem, n := type_gen_break(type)
-	if elem != nil && type_is_boolean(elem) && !type_is_untyped(elem) {
-		ty := spv_type(cg, type)
-		bits := u32(max(type_sizeof(elem)*8, 32))
-		one_s := spv.const_int(&cg.m, spv_type(cg, elem), 1, bits)
-		zero_s := spv.const_int(&cg.m, spv_type(cg, elem), 0, bits)
-		one := one_s if n <= 1 else spv_splat(cg, type, one_s)
-		zero := zero_s if n <= 1 else spv_splat(cg, type, zero_s)
-		return spv.select(&cg.m, ty, b, one, zero)
+	if !spv_bool_value(type) {
+		return b
 	}
-	return b
+	elem, n := type_gen_break(type)
+	ty := spv_bool_bits_type(cg, type)
+	bits := u32(max(type_sizeof(elem)*8, 32))
+	ity := spv.type_int(&cg.m, bits, false)
+	one_s := spv.const_int(&cg.m, ity, 1, bits)
+	zero_s := spv.const_int(&cg.m, ity, 0, bits)
+	one := one_s
+	zero := zero_s
+	if n > 1 {
+		ones := make([]spv.Id, n, context.temp_allocator)
+		zeros := make([]spv.Id, n, context.temp_allocator)
+		for i in 0 ..< n {
+			ones[i] = one_s
+			zeros[i] = zero_s
+		}
+		one = spv.composite_construct(&cg.m, ty, ones)
+		zero = spv.composite_construct(&cg.m, ty, zeros)
+	}
+	return spv.select(&cg.m, ty, b, one, zero)
 }
 
 spv_u32 :: proc(cg: ^Spv_CG, v: spv.Id, from: ^Type) -> spv.Id {
 	from := default_type(from)
-	if type_eq(from, t_u32) || type_eq(from, t_b32) {
+	if type_eq(from, t_b32) {
+		return spv_from_bool(cg, v, from)
+	}
+	if type_eq(from, t_u32) {
 		return v
 	}
 	dst := spv.type_u32(&cg.m)
@@ -1235,7 +1457,22 @@ spv_convert :: proc(cg: ^Spv_CG, v: spv.Id, from, to: ^Type) -> spv.Id {
 	}
 	dst := spv_type(cg, to)
 	if type_is_boolean(to) && !type_is_untyped(to) && type_is_boolean(from) && type_is_untyped(from) {
-		return spv_from_bool(cg, v, to)
+		return v
+	}
+	if spv_bool_value(from) || spv_bool_value(to) {
+		if spv_bool_value(from) && spv_bool_value(to) {
+			return v
+		}
+		if spv_bool_value(from) {
+			bits := spv_from_bool(cg, v, from)
+			return spv_convert(cg, bits, spv_bool_int_type(from), to)
+		}
+		z := spv_zero(cg, from)
+		op: spv.Op = .INotEqual
+		if type_is_float(type_base(from)) {
+			op = .FOrdNotEqual
+		}
+		return spv.relation(&cg.m, op, dst, v, z)
 	}
 	if type_is_vector(from) && type_is_vector(to) {
 		return spv_convert_scalar_like(cg, v, type_base(from), type_base(to), dst)

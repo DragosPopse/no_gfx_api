@@ -131,7 +131,7 @@ spv_emit_spec_const :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
 spv_spec_value :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
 	id := spv_emit_spec_const(cg, e)
 	if type_eq(e.type, t_b32) {
-		return spv_from_bool(cg, id, t_b32)
+		return id
 	}
 	return id
 }
@@ -209,16 +209,20 @@ spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 			}
 		}
 		sc := spv_entity_sc(cg, e)
-		layout: Spv_Layout = .Stored if sc == .PhysicalStorageBuffer else .Func
+		aligned := sc == .PhysicalStorageBuffer
 		val_ty := info.val_ty
 		if val_ty == spv.NONE {
-			val_ty = spv_type(cg, load_t, layout)
+			val_ty = spv_access_ty(cg, load_t, sc, aligned)
 		}
-		if sc == .PhysicalStorageBuffer {
+		if aligned {
 			loaded := spv.load_aligned(&cg.m, val_ty, ptr, spv_align_of(load_t))
 			return spv_change_layout(cg, loaded, load_t, .Stored, .Func)
 		}
-		return spv.load(&cg.m, val_ty, ptr)
+		loaded := spv.load(&cg.m, val_ty, ptr)
+		if spv_storage_class_requires_sized_bool(sc) && spv_type_has_bool(load_t) {
+			return spv_import_bool(cg, loaded, load_t)
+		}
+		return loaded
 	}
 	spv_err(cg, v.pos, "codegen_spirv: no value for '%s'", e.name)
 	return spv_zero(cg, e.type)
@@ -438,7 +442,7 @@ spv_index_lval :: proc(cg: ^Spv_CG, v: ^Index_Expr) -> Spv_Lval {
 	case:
 		elem_t = v.tav.type
 	}
-	pty := spv.type_pointer(&cg.m, base.sc, spv_type(cg, elem_t, .Stored if base.aligned else .Func))
+	pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, elem_t, base.sc, base.aligned))
 	chain := spv.access_chain(&cg.m, pty, base.ptr, {idx})
 	return Spv_Lval{ptr = chain, type = elem_t, sc = base.sc, aligned = base.aligned, align = spv_align_of(elem_t)}
 }
@@ -456,7 +460,7 @@ spv_selector_lval :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
 		if len(v.field.name) == 1 {
 			idx := spv.const_u32(&cg.m, comps[0])
 			elem := type_base(base_t)
-			pty := spv.type_pointer(&cg.m, base.sc, spv_type(cg, elem))
+			pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, elem, base.sc, base.aligned))
 			chain := spv.access_chain(&cg.m, pty, base.ptr, {idx})
 			return Spv_Lval{ptr = chain, type = elem, sc = base.sc, aligned = base.aligned, align = spv_align_of(elem)}
 		}
@@ -489,8 +493,7 @@ spv_selector_lval :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
 		fi := spv_field_index_name(st, v.field.name)
 		ft := st.fields.variables[fi].type
 		member := spv.const_u32(&cg.m, u32(fi))
-		layout: Spv_Layout = .Stored if base.aligned else .Func
-		pty := spv.type_pointer(&cg.m, base.sc, spv_type(cg, ft, layout))
+		pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, ft, base.sc, base.aligned))
 		chain := spv.access_chain(&cg.m, pty, base.ptr, {member})
 		return Spv_Lval{ptr = chain, type = ft, sc = base.sc, aligned = base.aligned, align = spv_align_of(ft)}
 	}
@@ -523,9 +526,12 @@ spv_unary :: proc(cg: ^Spv_CG, v: ^Unary_Expr) -> spv.Id {
 		return spv.snegate(&cg.m, ty, x)
 	case .Not:
 		b := spv_as_bool(cg, x, src_t)
-		nb := spv.logical_not(&cg.m, b)
-		return spv_from_bool(cg, nb, v.tav.type)
+		return spv.logical_not_ty(&cg.m, spv_bool_type(cg, v.tav.type), b)
 	case .Xor:
+		if spv_bool_value(src_t) {
+			b := spv_as_bool(cg, x, src_t)
+			return spv.logical_not_ty(&cg.m, spv_bool_type(cg, v.tav.type), b)
+		}
 		if type_is_bit_set(src_t) {
 			bs := src_t.derived.(^Type_Bit_Set)
 			bits := bs.upper - bs.lower + 1
@@ -614,10 +620,19 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		}
 		return spv.srem(&cg.m, ty, l, r)
 	case .And:
+		if spv_bool_value(res_t) {
+			return spv.logical_and_ty(&cg.m, ty, l, r)
+		}
 		return spv.bitwise_and(&cg.m, ty, l, r)
 	case .Or:
+		if spv_bool_value(res_t) {
+			return spv.logical_or_ty(&cg.m, ty, l, r)
+		}
 		return spv.bitwise_or(&cg.m, ty, l, r)
 	case .Xor:
+		if spv_bool_value(res_t) {
+			return spv.logical_not_equal_ty(&cg.m, ty, l, r)
+		}
 		return spv.bitwise_xor(&cg.m, ty, l, r)
 	case .And_Not:
 		n := spv.not_(&cg.m, spv_type(cg, rt), r)
@@ -631,8 +646,7 @@ spv_binary :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		}
 		return spv.shift_right_arithmetic(&cg.m, ty, l, sh)
 	case .Cmp_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq:
-		b := spv_compare(cg, op, l, r, lt)
-		return spv_from_bool(cg, b, res_t)
+		return spv_compare(cg, op, l, r, lt)
 	}
 
 	spv_err(cg, v.pos, "codegen_spirv: unsupported binary %v", op)
@@ -674,7 +688,21 @@ spv_mul :: proc(cg: ^Spv_CG, l, r: spv.Id, lt, rt, res: ^Type) -> spv.Id {
 
 spv_compare :: proc(cg: ^Spv_CG, op: Token_Kind, l, r: spv.Id, lt: ^Type) -> spv.Id {
 	bty := spv_bool_type(cg, lt)
-	base := type_base(lt)
+	cmp_l := l
+	cmp_r := r
+	cmp_t := lt
+	if spv_bool_value(lt) {
+		#partial switch op {
+		case .Cmp_Eq:
+			return spv.relation(&cg.m, .LogicalEqual, bty, l, r)
+		case .Not_Eq:
+			return spv.relation(&cg.m, .LogicalNotEqual, bty, l, r)
+		}
+		cmp_l = spv_from_bool(cg, l, lt)
+		cmp_r = spv_from_bool(cg, r, lt)
+		cmp_t = spv_bool_int_type(lt)
+	}
+	base := type_base(cmp_t)
 
 	spv_op: spv.Op
 	if type_is_float(base) {
@@ -705,11 +733,10 @@ spv_compare :: proc(cg: ^Spv_CG, op: Token_Kind, l, r: spv.Id, lt: ^Type) -> spv
 		case .Gt_Eq:  spv_op = .SGreaterThanEqual
 		}
 	}
-	return spv.relation(&cg.m, spv_op, bty, l, r)
+	return spv.relation(&cg.m, spv_op, bty, cmp_l, cmp_r)
 }
 
 spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
-	// Short-circuit with selection.
 	res_t := default_type(v.tav.type)
 	tmp := spv_fn_var(cg, res_t, "_land")
 	lb := spv_cond_expr(cg, v.left)
@@ -721,23 +748,36 @@ spv_logical_bin :: proc(cg: ^Spv_CG, v: ^Binary_Expr) -> spv.Id {
 		spv.branch_cond(&cg.m, lb, then_b, else_b)
 		spv_block(cg, then_b)
 		rb := spv_cond_expr(cg, v.right)
-		spv.store(&cg.m, tmp, spv_from_bool(cg, rb, res_t))
+		spv.store(&cg.m, tmp, rb)
 		spv.branch_if_open(&cg.m, merge)
 		spv_block(cg, else_b)
-		spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, false), res_t))
+		spv.store(&cg.m, tmp, spv_bool_const(cg, res_t, false))
 		spv.branch_if_open(&cg.m, merge)
 	} else {
 		spv.branch_cond(&cg.m, lb, then_b, else_b)
 		spv_block(cg, then_b)
-		spv.store(&cg.m, tmp, spv_from_bool(cg, spv.const_bool(&cg.m, true), res_t))
+		spv.store(&cg.m, tmp, spv_bool_const(cg, res_t, true))
 		spv.branch_if_open(&cg.m, merge)
 		spv_block(cg, else_b)
 		rb := spv_cond_expr(cg, v.right)
-		spv.store(&cg.m, tmp, spv_from_bool(cg, rb, res_t))
+		spv.store(&cg.m, tmp, rb)
 		spv.branch_if_open(&cg.m, merge)
 	}
 	spv_block(cg, merge)
 	return spv.load(&cg.m, spv_type(cg, res_t), tmp)
+}
+
+spv_bool_const :: proc(cg: ^Spv_CG, type: ^Type, on: bool) -> spv.Id {
+	_, n := type_gen_break(default_type(type))
+	b := spv.const_bool(&cg.m, on)
+	if n <= 1 {
+		return b
+	}
+	parts := make([]spv.Id, n, context.temp_allocator)
+	for i in 0 ..< n {
+		parts[i] = b
+	}
+	return spv.composite_construct(&cg.m, spv_bool_type(cg, type), parts)
 }
 
 spv_ternary :: proc(cg: ^Spv_CG, v: ^Ternary_If_Expr) -> spv.Id {
@@ -1057,7 +1097,7 @@ spv_builtin_rvalue :: proc(cg: ^Spv_CG, id: Builtin_Proc, call: ^Call_Expr) -> s
 	case .rayquery_proceed:
 		rq := spv_ray_query_ptr(cg, call.args[0])
 		b := spv.ray_query_proceed(&cg.m, rq)
-		return spv_from_bool(cg, b, call.tav.type)
+		return b
 	case .rayquery_result:
 		return spv_ray_query_hit(cg, call, true)
 	case .rayquery_candidate:
@@ -1167,15 +1207,15 @@ spv_glsl450_or_core :: proc(cg: ^Spv_CG, id: Builtin_Proc, call: ^Call_Expr) -> 
 	case .dFdy: return spv.dpdy(&cg.m, ty, arg(cg, call, 0))
 	case .fwidth: return spv.fwidth(&cg.m, ty, arg(cg, call, 0))
 	case .is_nan:
-		return spv_from_bool(cg, spv.is_nan(&cg.m, arg(cg, call, 0)), res_t)
+		return spv.is_nan_ty(&cg.m, spv_bool_type(cg, res_t), arg(cg, call, 0))
 	case .is_inf:
-		return spv_from_bool(cg, spv.is_inf(&cg.m, arg(cg, call, 0)), res_t)
+		return spv.is_inf_ty(&cg.m, spv_bool_type(cg, res_t), arg(cg, call, 0))
 	case .all:
 		v := spv_as_bool(cg, arg(cg, call, 0), call.args[0].tav.type)
-		return spv_from_bool(cg, spv.all(&cg.m, v), res_t)
+		return spv.all(&cg.m, v)
 	case .any:
 		v := spv_as_bool(cg, arg(cg, call, 0), call.args[0].tav.type)
-		return spv_from_bool(cg, spv.any_(&cg.m, v), res_t)
+		return spv.any_(&cg.m, v)
 	case .f32_from_u32_bits:
 		return spv.bitcast(&cg.m, spv.type_f32(&cg.m), arg(cg, call, 0))
 	case .u32_from_f32_bits:
