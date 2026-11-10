@@ -167,22 +167,7 @@ spv_ident_rvalue :: proc(cg: ^Spv_CG, v: ^Ident) -> spv.Id {
 		return spv.NONE
 	}
 	if e.using_base != nil {
-		base := spv_rvalue(cg, e.using_base)
-		t := e.using_base.tav.type
-		cur := base
-		for field in e.using_chain {
-			if field == nil do continue
-			if type_is_pointer(t) {
-				cur = spv_psb_index0(cg, cur, type_pointer_elem(t))
-				t = type_pointer_elem(t)
-			}
-			st, sok := t.derived.(^Type_Struct)
-			if !sok do continue
-			idx := spv_field_index(st, field)
-			cur = spv.composite_extract(&cg.m, spv_type(cg, field.type), cur, u32(idx))
-			t = field.type
-		}
-		return cur
+		return spv_using_rvalue(cg, e)
 	}
 	if e.kind == .Specialization_Constant {
 		return spv_spec_value(cg, e)
@@ -248,26 +233,94 @@ spv_field_index_name :: proc(st: ^Type_Struct, name: string) -> int {
 	return 0
 }
 
+spv_expr_address_sc :: proc(cg: ^Spv_CG, expr: ^Expr) -> (sc: spv.Storage_Class, ok: bool) {
+	expr := unparen_expr(expr)
+	if expr == nil do return
+	#partial switch v in expr.derived_expr {
+	case ^Ident:
+		e := v.entity
+		if e == nil || cg.entities[e].ptr == spv.NONE do return
+		return spv_entity_sc(cg, e), true
+	case ^Selector_Expr:
+		bt := v.expr.tav.type
+		if spv_expr_is_indirect_data(v.expr) {
+			if elem := type_pointer_elem(bt); elem != nil {
+				bt = elem
+			}
+		}
+		if type_is_pointer(bt) && !spv_expr_is_indirect_data(v.expr) {
+			return .PhysicalStorageBuffer, true
+		}
+		return spv_expr_address_sc(cg, v.expr)
+	case ^Index_Expr:
+		if type_is_slice(v.expr.tav.type) || type_is_multi_pointer(v.expr.tav.type) {
+			return .PhysicalStorageBuffer, true
+		}
+		return spv_expr_address_sc(cg, v.expr)
+	case ^Deref_Expr:
+		return .PhysicalStorageBuffer, true
+	case ^Matrix_Index_Expr:
+		return spv_expr_address_sc(cg, v.expr)
+	case ^Unary_Expr:
+		if v.op.kind == .And {
+			return spv_expr_address_sc(cg, v.expr)
+		}
+	}
+	return
+}
+
+spv_address_loads_member :: proc(sc: spv.Storage_Class) -> bool {
+	return sc != .Function && sc != .Private
+}
+
+spv_access_indices :: proc(cg: ^Spv_CG, base: Spv_Lval, indices: []spv.Id, final_type: ^Type) -> Spv_Lval {
+	if len(indices) == 0 {
+		l := base
+		l.type = final_type
+		return l
+	}
+	pointee := spv_access_ty(cg, final_type, base.sc, base.aligned)
+	pty := spv.type_pointer(&cg.m, base.sc, pointee)
+	chain := spv.access_chain(&cg.m, pty, base.ptr, indices)
+	return Spv_Lval{
+		ptr = chain,
+		type = final_type,
+		sc = base.sc,
+		aligned = base.aligned,
+		align = spv_align_of(final_type),
+	}
+}
+
+spv_struct_field_lval :: proc(cg: ^Spv_CG, base: Spv_Lval, field: ^Entity, index: int) -> Spv_Lval {
+	return spv_access_indices(cg, base, []spv.Id{spv.const_u32(&cg.m, u32(index))}, field.type)
+}
+
+spv_psb_chain_base :: proc(cg: ^Spv_CG, ptr: spv.Id, elem: ^Type) -> (base: Spv_Lval, indices: [dynamic]spv.Id) {
+	base = Spv_Lval{ptr = ptr, type = elem, sc = .PhysicalStorageBuffer, aligned = true, align = spv_align_of(elem)}
+	indices = make([dynamic]spv.Id, context.temp_allocator)
+	zero := spv.const_u32(&cg.m, 0)
+	append(&indices, zero)
+	append(&indices, zero)
+	return
+}
+
 spv_selector_rvalue :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> spv.Id {
 	if lhs := entity_from_expr(v.expr); lhs != nil && lhs.kind == .Import {
 		return spv_rvalue(cg, v.field)
 	}
 	base_t := v.expr.tav.type
-	if spv_expr_is_indirect_data(v.expr) {
+	indirect := spv_expr_is_indirect_data(v.expr)
+	if indirect {
 		if elem := type_pointer_elem(base_t); elem != nil {
 			base_t = elem
 		}
 	}
+	if sc, addressed := spv_expr_address_sc(cg, v.expr); (addressed && spv_address_loads_member(sc)) || (type_is_pointer(base_t) && !indirect) {
+		return spv_load_ptr(cg, spv_selector_lval(cg, v))
+	}
 	if type_is_vector(base_t) {
 		vec := spv_rvalue(cg, v.expr)
 		return spv_swizzle_extract(cg, vec, base_t, v.field.name, v.tav.type)
-	}
-	if type_is_pointer(base_t) && !spv_expr_is_indirect_data(v.expr) {
-		loaded := spv_psb_index0(cg, spv_rvalue(cg, v.expr), type_pointer_elem(base_t))
-		st := type_pointer_elem(base_t).derived.(^Type_Struct)
-		idx := spv_field_index_name(st, v.field.name)
-		ft := st.fields.variables[idx].type
-		return spv.composite_extract(&cg.m, spv_type(cg, ft), loaded, u32(idx))
 	}
 	agg := spv_rvalue(cg, v.expr)
 	if st, ok := base_t.derived.(^Type_Struct); ok {
@@ -276,6 +329,67 @@ spv_selector_rvalue :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> spv.Id {
 		return spv.composite_extract(&cg.m, spv_type(cg, ft), agg, u32(idx))
 	}
 	return agg
+}
+
+spv_using_rvalue :: proc(cg: ^Spv_CG, e: ^Entity) -> spv.Id {
+	base_expr := e.using_base
+	base_t := base_expr.tav.type
+	indirect := spv_expr_is_indirect_data(base_expr)
+	if indirect {
+		if elem := type_pointer_elem(base_t); elem != nil {
+			base_t = elem
+		}
+	}
+	if sc, addressed := spv_expr_address_sc(cg, base_expr); (addressed && spv_address_loads_member(sc)) || (type_is_pointer(base_t) && !indirect) {
+		l: Spv_Lval
+		t: ^Type
+		idxs: [dynamic]spv.Id
+		if type_is_pointer(base_t) && !indirect {
+			elem := type_pointer_elem(base_expr.tav.type)
+			l, idxs = spv_psb_chain_base(cg, spv_rvalue(cg, base_expr), elem)
+			t = elem
+		} else {
+			l = spv_lval(cg, base_expr)
+			t = l.type
+			idxs = make([dynamic]spv.Id, context.temp_allocator)
+		}
+		for field in e.using_chain {
+			if field == nil do continue
+			if type_is_pointer(t) {
+				if len(idxs) > 0 {
+					l = spv_access_indices(cg, l, idxs[:], t)
+					clear(&idxs)
+				}
+				elem := type_pointer_elem(t)
+				loaded := spv_load_ptr(cg, l)
+				l, idxs = spv_psb_chain_base(cg, loaded, elem)
+				t = elem
+			}
+			st, sok := t.derived.(^Type_Struct)
+			if !sok do break
+			append(&idxs, spv.const_u32(&cg.m, u32(spv_field_index(st, field))))
+			t = field.type
+		}
+		if len(idxs) > 0 {
+			l = spv_access_indices(cg, l, idxs[:], t)
+		}
+		return spv_load_ptr(cg, l)
+	}
+	cur := spv_rvalue(cg, base_expr)
+	t := base_expr.tav.type
+	for field in e.using_chain {
+		if field == nil do continue
+		if type_is_pointer(t) {
+			cur = spv_psb_index0(cg, cur, type_pointer_elem(t))
+			t = type_pointer_elem(t)
+		}
+		st, sok := t.derived.(^Type_Struct)
+		if !sok do continue
+		idx := spv_field_index(st, field)
+		cur = spv.composite_extract(&cg.m, spv_type(cg, field.type), cur, u32(idx))
+		t = field.type
+	}
+	return cur
 }
 
 spv_swizzle_extract :: proc(cg: ^Spv_CG, vec: spv.Id, vec_t: ^Type, swz: string, result_t: ^Type) -> spv.Id {
@@ -333,6 +447,16 @@ spv_psb_index :: proc(cg: ^Spv_CG, ptr: spv.Id, elem: ^Type, index: spv.Id) -> s
 
 spv_psb_index0 :: proc(cg: ^Spv_CG, ptr: spv.Id, elem: ^Type) -> spv.Id {
 	return spv_psb_index(cg, ptr, elem, spv.const_u32(&cg.m, 0))
+}
+
+spv_psb_pointee_lval :: proc(cg: ^Spv_CG, ptr: spv.Id, elem: ^Type) -> Spv_Lval {
+	return Spv_Lval{
+		ptr = spv_psb_elem_ptr(cg, ptr, elem, spv.const_u32(&cg.m, 0)),
+		type = elem,
+		sc = .PhysicalStorageBuffer,
+		aligned = true,
+		align = spv_align_of(elem),
+	}
 }
 
 spv_psb_store_index :: proc(cg: ^Spv_CG, ptr: spv.Id, elem: ^Type, index: spv.Id, val: spv.Id) {
@@ -447,22 +571,143 @@ spv_index_lval :: proc(cg: ^Spv_CG, v: ^Index_Expr) -> Spv_Lval {
 	return Spv_Lval{ptr = chain, type = elem_t, sc = base.sc, aligned = base.aligned, align = spv_align_of(elem_t)}
 }
 
-spv_selector_lval :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
-	base_t := v.expr.tav.type
-	if spv_expr_is_indirect_data(v.expr) {
-		if elem := type_pointer_elem(base_t); elem != nil {
-			base_t = elem
+spv_selector_base_type :: proc(expr: ^Expr) -> (t: ^Type, indirect: bool) {
+	expr := unparen_expr(expr)
+	t = expr.tav.type
+	indirect = spv_expr_is_indirect_data(expr)
+	if indirect {
+		if elem := type_pointer_elem(t); elem != nil {
+			t = elem
 		}
 	}
+	return
+}
+
+// Nested struct fields and a final vector component, outermost first.
+// Stops at a pointer so that pointer is loaded before the next chain.
+spv_selector_run :: proc(v: ^Selector_Expr) -> (steps: []^Selector_Expr, fold: bool) {
+	list := make([dynamic]^Selector_Expr, context.temp_allocator)
+	cur := v
+	for {
+		append(&list, cur)
+		base_expr := unparen_expr(cur.expr)
+		base_t, indirect := spv_selector_base_type(base_expr)
+		if type_is_vector(base_t) && len(cur.field.name) != 1 && len(list) > 1 {
+			return nil, false
+		}
+		if type_is_pointer(base_t) && !indirect {
+			break
+		}
+		inner, ok := base_expr.derived_expr.(^Selector_Expr)
+		if !ok {
+			break
+		}
+		if type_is_vector(base_t) {
+			cur = inner
+			continue
+		}
+		if _, sok := base_t.derived.(^Type_Struct); sok {
+			cur = inner
+			continue
+		}
+		break
+	}
+	return list[:], true
+}
+
+spv_selector_lval :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
+	steps, fold := spv_selector_run(v)
+	if !fold || len(steps) == 0 {
+		return spv_selector_lval_one(cg, v)
+	}
+	outer := steps[0]
+	outer_base, _ := spv_selector_base_type(outer.expr)
+	swizzle: []u32
+	vec_t: ^Type
+	if type_is_vector(outer_base) && len(outer.field.name) != 1 {
+		swizzle = spv_swizzle_comps(outer.field.name)
+		vec_t = outer_base
+		steps = steps[1:]
+	}
+	if len(steps) == 0 {
+		return spv_selector_swizzle_lval(cg, unparen_expr(outer.expr), outer.tav.type, vec_t, swizzle)
+	}
+
+	inner := steps[len(steps) - 1]
+	root_expr := unparen_expr(inner.expr)
+	root_t, indirect := spv_selector_base_type(root_expr)
+	l: Spv_Lval
+	t: ^Type
+	idxs: [dynamic]spv.Id
+	if type_is_pointer(root_t) && !indirect {
+		elem := type_pointer_elem(root_expr.tav.type)
+		l, idxs = spv_psb_chain_base(cg, spv_rvalue(cg, root_expr), elem)
+		t = elem
+	} else {
+		l = spv_lval(cg, root_expr)
+		t = l.type
+		idxs = make([dynamic]spv.Id, context.temp_allocator)
+	}
+	for i := len(steps) - 1; i >= 0; i -= 1 {
+		sel := steps[i]
+		if type_is_vector(t) {
+			comps := spv_swizzle_comps(sel.field.name)
+			if len(sel.field.name) != 1 {
+				break
+			}
+			append(&idxs, spv.const_u32(&cg.m, comps[0]))
+			t = type_base(t)
+			continue
+		}
+		st, sok := t.derived.(^Type_Struct)
+		if !sok {
+			break
+		}
+		fi := spv_field_index_name(st, sel.field.name)
+		append(&idxs, spv.const_u32(&cg.m, u32(fi)))
+		t = st.fields.variables[fi].type
+	}
+	l = spv_access_indices(cg, l, idxs[:], t)
+	if len(swizzle) > 0 {
+		l.vec = vec_t
+		l.swizzle = swizzle
+		l.type = outer.tav.type
+		l.align = spv_align_of(vec_t)
+	}
+	return l
+}
+
+spv_selector_swizzle_lval :: proc(cg: ^Spv_CG, expr: ^Expr, result_t, vec_t: ^Type, swizzle: []u32) -> Spv_Lval {
+	base_t, indirect := spv_selector_base_type(expr)
+	if type_is_pointer(base_t) && !indirect {
+		elem := type_pointer_elem(expr.tav.type)
+		l, idxs := spv_psb_chain_base(cg, spv_rvalue(cg, expr), elem)
+		l = spv_access_indices(cg, l, idxs[:], elem)
+		l.vec = vec_t
+		l.swizzle = swizzle
+		l.type = result_t
+		l.align = spv_align_of(vec_t)
+		return l
+	}
+	base := spv_lval(cg, expr)
+	return Spv_Lval{
+		ptr = base.ptr,
+		type = result_t,
+		sc = base.sc,
+		aligned = base.aligned,
+		align = base.align,
+		vec = vec_t,
+		swizzle = swizzle,
+	}
+}
+
+spv_selector_lval_one :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
+	base_t, indirect := spv_selector_base_type(v.expr)
 	if type_is_vector(base_t) {
 		base := spv_lval(cg, v.expr)
 		comps := spv_swizzle_comps(v.field.name)
 		if len(v.field.name) == 1 {
-			idx := spv.const_u32(&cg.m, comps[0])
-			elem := type_base(base_t)
-			pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, elem, base.sc, base.aligned))
-			chain := spv.access_chain(&cg.m, pty, base.ptr, {idx})
-			return Spv_Lval{ptr = chain, type = elem, sc = base.sc, aligned = base.aligned, align = spv_align_of(elem)}
+			return spv_access_indices(cg, base, []spv.Id{spv.const_u32(&cg.m, comps[0])}, type_base(base_t))
 		}
 		return Spv_Lval{
 			ptr = base.ptr,
@@ -474,28 +719,19 @@ spv_selector_lval :: proc(cg: ^Spv_CG, v: ^Selector_Expr) -> Spv_Lval {
 			swizzle = comps,
 		}
 	}
-	if type_is_pointer(base_t) && !spv_expr_is_indirect_data(v.expr) {
-		ptr := spv_rvalue(cg, v.expr)
+	if type_is_pointer(base_t) && !indirect {
 		elem := type_pointer_elem(base_t)
 		st := elem.derived.(^Type_Struct)
 		fi := spv_field_index_name(st, v.field.name)
 		ft := st.fields.variables[fi].type
-		zero := spv.const_u32(&cg.m, 0)
-		member := spv.const_u32(&cg.m, u32(fi))
-		elem_ptr_ty := spv.type_pointer(&cg.m, .PhysicalStorageBuffer, spv_type(cg, elem, .Stored))
-		obj := spv.access_chain(&cg.m, elem_ptr_ty, ptr, {zero, zero})
-		fty := spv.type_pointer(&cg.m, .PhysicalStorageBuffer, spv_type(cg, ft, .Stored))
-		chain := spv.access_chain(&cg.m, fty, obj, {member})
-		return Spv_Lval{ptr = chain, type = ft, sc = .PhysicalStorageBuffer, aligned = true, align = spv_align_of(ft)}
+		l, idxs := spv_psb_chain_base(cg, spv_rvalue(cg, v.expr), elem)
+		append(&idxs, spv.const_u32(&cg.m, u32(fi)))
+		return spv_access_indices(cg, l, idxs[:], ft)
 	}
 	base := spv_lval(cg, v.expr)
 	if st, ok := base_t.derived.(^Type_Struct); ok {
 		fi := spv_field_index_name(st, v.field.name)
-		ft := st.fields.variables[fi].type
-		member := spv.const_u32(&cg.m, u32(fi))
-		pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, ft, base.sc, base.aligned))
-		chain := spv.access_chain(&cg.m, pty, base.ptr, {member})
-		return Spv_Lval{ptr = chain, type = ft, sc = base.sc, aligned = base.aligned, align = spv_align_of(ft)}
+		return spv_struct_field_lval(cg, base, st.fields.variables[fi], fi)
 	}
 	spv_err(cg, v.pos, "codegen_spirv: selector is not an lvalue")
 	return {}
@@ -506,7 +742,7 @@ spv_matrix_index_lval :: proc(cg: ^Spv_CG, v: ^Matrix_Index_Expr) -> Spv_Lval {
 	mt := v.expr.tav.type.derived.(^Type_Matrix)
 	col := spv_index_as_u32(cg, v.column_index)
 	row := spv_index_as_u32(cg, v.row_index)
-	pty := spv.type_pointer(&cg.m, base.sc, spv_type(cg, mt.elem))
+	pty := spv.type_pointer(&cg.m, base.sc, spv_access_ty(cg, mt.elem, base.sc, base.aligned))
 	chain := spv.access_chain(&cg.m, pty, base.ptr, {col, row})
 	return Spv_Lval{ptr = chain, type = mt.elem, sc = base.sc, aligned = base.aligned, align = spv_align_of(mt.elem)}
 }

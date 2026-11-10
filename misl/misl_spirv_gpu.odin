@@ -585,10 +585,8 @@ spv_emit_entry_prolog :: proc(cg: ^Spv_CG, e: ^Entity, pt: ^Type_Proc) {
 			draw := spv_builtin_var(cg, .DrawIndex, spv.type_u32(&cg.m), "gl_DrawID")
 			idx = spv.load(&cg.m, spv.type_u32(&cg.m), draw)
 		}
-		loaded := spv_psb_index(cg, ptr_val, pointee, idx)
-		loc := spv_fn_var(cg, pointee, v.name, pos = v.pos)
-		spv.store(&cg.m, loc, loaded)
-		spv_bind_entity(cg, v, loc, .Function)
+		elem_ptr := spv_psb_elem_ptr(cg, ptr_val, pointee, idx)
+		spv_bind_entity(cg, v, elem_ptr, .PhysicalStorageBuffer)
 	}
 	compute_sems := [5]Semantic{.Global_Thread, .Group_Thread, .Group, .Group_Index, .Num_Groups}
 	for sem in compute_sems {
