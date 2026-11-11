@@ -1,5 +1,0 @@
-// Shared helpers for import_rel.misl (not a root entry module).
-
-double :: proc(x: f32) -> f32 {
-	return x * 2
-}

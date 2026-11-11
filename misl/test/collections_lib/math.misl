@@ -1,5 +1,0 @@
-// Used with: mislrw … -collection:lib=oge/misl2/test/collections_lib
-
-scale :: proc(x: f32, k: f32) -> f32 {
-	return x * k
-}
